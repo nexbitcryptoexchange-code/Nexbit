@@ -637,32 +637,9 @@ async def orders(status: Optional[str] = None, user: dict = Depends(get_current_
 
 @trade_r.post("/orders/{order_id}/cancel")
 async def cancel_order(order_id: str, user: dict = Depends(get_current_user)):
-    o = await db.orders.find_one({"id": order_id, "user_id": user["id"]})
-    if not o:
-        raise HTTPException(404, "Order not found")
-    if o["status"] not in {"open", "partial"}:
-        raise HTTPException(400, "Order not open")
-    base, quote = _parse_pair(o["pair"])
-    remaining = float(o.get("remaining_qty") or (float(o["quantity"]) - float(o.get("filled_qty") or 0)))
-    if remaining <= 0:
-        raise HTTPException(400, "Order has no remaining quantity")
-    if o["side"] == "buy":
-        fee = 0.001
-        market = await db.market_pairs.find_one({"symbol": o["pair"]}, {"_id": 0, "taker_fee": 1})
-        if market:
-            fee = float(market.get("taker_fee", fee))
-        release = remaining * float(o["price"]) * (1.0 + fee)
-        await _adjust(user["id"], quote, "locked", -release, reason="trade.order.cancel", reference_id=order_id)
-        await _adjust(user["id"], quote, "spot", release, reason="trade.order.cancel", reference_id=order_id)
-    else:
-        await _adjust(user["id"], base, "locked", -remaining, reason="trade.order.cancel", reference_id=order_id)
-        await _adjust(user["id"], base, "spot", remaining, reason="trade.order.cancel", reference_id=order_id)
-    await db.orders.update_one(
-        {"id": order_id, "user_id": user["id"], "status": {"$in": ["open", "partial"]}},
-        {"$set": {"status": "cancelled", "remaining_qty": 0.0, "cancelled_at": _iso(_now()), "updated_at": _iso(_now())}},
-    )
+    order = await matching_engine.cancel(order_id, user, _adjust)
     await _log_audit(user["id"], "trade.order.cancel", target=order_id)
-    return {"ok": True}
+    return {"ok": True, "order": order}
 
 
 @trade_r.get("/trades")
