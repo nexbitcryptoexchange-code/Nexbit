@@ -905,6 +905,71 @@ async def blockbee_deposit_webhook(request: Request):
     )
     return Response(content="*ok*", media_type="text/plain")
 
+async def _reconcile_payout_transaction(
+    tx: dict,
+    payout: dict,
+    *,
+    source: str,
+    session,
+) -> dict:
+    """Apply an authoritative BlockBee payout state exactly once.
+
+    BlockBee documents done/error/expired as terminal states and processing/created
+    as non-terminal. Funds remain locked until a terminal state is confirmed.
+    """
+    status = str(payout.get("status") or "").lower()
+    now = _iso(_now())
+    payout_id = str(payout.get("id") or tx.get("payout_id") or "")
+    txid = payout.get("txid") or None
+    if status not in {"created", "processing", "done", "rejected", "error", "expired"}:
+        raise HTTPException(502, "Custody provider returned an unknown payout status")
+
+    if status == "done":
+        changed = await db.transactions.update_one(
+            {"id": tx["id"], "status": {"$in": ["submitting", "processing"]}},
+            {"$set": {
+                "status": "completed",
+                "completed_at": now,
+                "payout_status": "done",
+                "txid": txid,
+                "provider_last_checked_at": now,
+                "provider_reconciled_by": source,
+            }},
+            session=session,
+        )
+        return {"status": "completed", "changed": changed.modified_count == 1, "txid": txid}
+
+    if status in {"rejected", "error", "expired"}:
+        changed = await db.transactions.update_one(
+            {"id": tx["id"], "status": {"$in": ["submitting", "processing"]}},
+            {"$set": {
+                "status": "failed",
+                "payout_status": status,
+                "failure_reason": payout.get("error") or status,
+                "failed_at": now,
+                "provider_last_checked_at": now,
+                "provider_reconciled_by": source,
+            }},
+            session=session,
+        )
+        if changed.modified_count == 1:
+            await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"], session=session)
+            await _adjust(tx["user_id"], tx["asset"], "spot", tx["amount"], session=session)
+        return {"status": "failed", "changed": changed.modified_count == 1}
+
+    changed = await db.transactions.update_one(
+        {"id": tx["id"], "status": {"$in": ["submitting", "processing"]}},
+        {"$set": {
+            "status": "processing",
+            "payout_status": status,
+            "provider_last_checked_at": now,
+            "provider_reconciled_by": source,
+        }},
+        session=session,
+    )
+    return {"status": "processing", "changed": changed.modified_count == 1}
+
+
 @api.post("/webhooks/blockbee/payout")
 async def blockbee_payout_webhook(request: Request):
     if not custody.enabled:
@@ -946,24 +1011,16 @@ async def blockbee_payout_webhook(request: Request):
                     "status": status, "transaction_id": tx["id"], "created_at": now,
                 }, session=session)
 
-                if status == "done":
-                    await db.transactions.update_one(
-                        {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
-                        {"$set": {"status": "completed", "completed_at": now, "payout_status": "done"}},
-                        session=session,
-                    )
-                else:
-                    changed = await db.transactions.update_one(
-                        {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
-                        {"$set": {
-                            "status": "failed", "payout_status": status,
-                            "failure_reason": fields.get("error") or status, "failed_at": now,
-                        }},
-                        session=session,
-                    )
-                    if changed.modified_count:
-                        await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"], session=session)
-                        await _adjust(tx["user_id"], tx["asset"], "spot", tx["amount"], session=session)
+                await _reconcile_payout_transaction(
+                    tx, {
+                        "id": payout_id,
+                        "status": status,
+                        "error": fields.get("error"),
+                        "txid": fields.get("txid"),
+                    },
+                    source="webhook",
+                    session=session,
+                )
     except DuplicateKeyError:
         return Response(content="*ok*", media_type="text/plain")
 
@@ -1237,9 +1294,13 @@ async def admin_dashboard(actor: dict = Depends(require_admin)):
         withdrawals_by_asset[asset] = withdrawals_by_asset.get(asset, Decimal("0")) + amount
         if asset == "USDT":
             total_withdrawals += amount
-    trades_24h = await db.trades.count_documents({})
+    cutoff_24h = _iso(_now() - timedelta(hours=24))
+    trades_24h = await db.trades.count_documents({"created_at": {"$gte": cutoff_24h}})
     volume_24h = Decimal("0")
-    async for t in db.trades.find({}, {"_id": 0, "price": 1, "quantity": 1}):
+    async for t in db.trades.find(
+        {"created_at": {"$gte": cutoff_24h}},
+        {"_id": 0, "price": 1, "quantity": 1},
+    ):
         volume_24h += to_decimal(t.get("price") or 0) * to_decimal(t.get("quantity") or 0)
     activities = await db.audit_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
     latest_users = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).limit(10).to_list(10)
