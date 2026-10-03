@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "backend/.env.example"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     paths:
       - "backend/**"
+      - "backend/.env.example"
       - ".github/workflows/backend-ci.yml"
 
 jobs:
@@ -31,6 +33,9 @@ jobs:
       CORS_ORIGINS: "*"
       NEXBIT_PRODUCTION: "false"
       NEXBIT_CUSTODY_ENABLED: "false"
+      NEXBIT_CUSTODY_PROVIDER: "blockbee"
+      NEXBIT_FUTURES_ENABLED: "false"
+      NEXBIT_EARN_ENABLED: "false"
       JWT_SECRET: "ci-only-jwt-secret-change-me-8f1e2d7c9b4a6f3e"
 
     steps:
