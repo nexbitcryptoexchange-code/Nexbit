@@ -9,10 +9,10 @@ NEXBIT is a production-architecture crypto exchange built from scratch with Fast
 - DB: MongoDB
 - Prices: CoinGecko public API (fallback to simulated prices)
 
-## Credentials (dev)
-- Admin: `admin@nexbit.com` / `Admin@12345`
-- Demo user: `demo@nexbit.com` / `Demo@12345`
-- Email verify code (dev): `123456`
+## Environment modes
+- Local/demo testing: set `NEXBIT_PRODUCTION=false`.
+- Real deployment: set `NEXBIT_PRODUCTION=true`, use strong secrets, explicit CORS origins, and real wallet/deposit infrastructure.
+- Production mode disables demo-user seeding, free signup balances, reset-token exposure, the email-verification bypass, and the fake deposit endpoint.
 
 ## Env vars
 Backend (`backend/.env`): `MONGO_URL`, `DB_NAME`, `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `DEMO_USER_EMAIL`, `DEMO_USER_PASSWORD`
