@@ -199,6 +199,21 @@ def test_admin_ledger_credit_is_idempotent_and_debitable():
     assert float(usdt["spot"]) == 0.0
 
 
+def test_admin_dashboard_does_not_synthesize_non_usdt_values():
+    admin_token = _login_admin()
+    response = requests.get(
+        f"{API}/admin/dashboard",
+        headers=_headers(admin_token),
+        timeout=20,
+    )
+    assert response.status_code == 200, response.text
+    stats = response.json()["stats"]
+    assert "deposits_by_asset" in stats
+    assert "withdrawals_by_asset" in stats
+    assert isinstance(stats["deposits_by_asset"], dict)
+    assert isinstance(stats["withdrawals_by_asset"], dict)
+
+
 def test_non_admin_cannot_read_admin_endpoints():
     token, _ = _register()
     headers = _headers(token)
