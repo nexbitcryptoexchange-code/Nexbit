@@ -1,0 +1,29 @@
+"""MongoDB connection and startup helpers."""
+import os
+from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
+from pathlib import Path
+
+load_dotenv(Path(__file__).parent / ".env")
+_mongo_url = os.environ["MONGO_URL"]
+_db_name = os.environ["DB_NAME"]
+client = AsyncIOMotorClient(_mongo_url)
+db = client[_db_name]
+
+async def ensure_indexes() -> None:
+    await db.users.create_index("email", unique=True)
+    await db.users.create_index("role")
+    await db.login_attempts.create_index("identifier")
+    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await db.orders.create_index([("user_id", 1), ("created_at", -1)])
+    await db.orders.create_index([("pair", 1), ("status", 1)])
+    await db.transactions.create_index([("user_id", 1), ("created_at", -1)])
+    await db.positions.create_index([("user_id", 1), ("status", 1)])
+    await db.trades.create_index([("pair", 1), ("created_at", -1)])
+    await db.kyc.create_index("user_id", unique=True)
+    await db.wallets.create_index([("user_id", 1), ("asset", 1)], unique=True)
+    await db.audit_logs.create_index([("created_at", -1)])
+    await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
+
+async def close() -> None:
+    client.close()
