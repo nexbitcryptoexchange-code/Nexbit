@@ -1568,7 +1568,7 @@ async def admin_set_fee_treasury(data: FeeTreasuryIn, actor: dict = Depends(requ
             {"user_id": data.user_id, "asset": asset},
             {"$setOnInsert": {
                 "id": _new_id(), "user_id": data.user_id, "asset": asset,
-                "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+                "spot": to_decimal128("0"), "futures": to_decimal128("0"), "earn": to_decimal128("0"), "locked": to_decimal128("0"),
                 "updated_at": _iso(_now()),
             }},
             upsert=True,
