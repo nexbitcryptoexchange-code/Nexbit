@@ -115,6 +115,24 @@ def _public_user(u: dict) -> dict:
     }
 
 
+def _mask_document_number(value: Optional[str]) -> str:
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "*" * len(value)
+    return "*" * (len(value) - 4) + value[-4:]
+
+
+def _public_kyc(doc: Optional[dict]) -> Optional[dict]:
+    if not doc:
+        return None
+    public_doc = {key: value for key, value in doc.items() if key != "_id"}
+    if "document_number" in public_doc:
+        public_doc["document_number"] = _mask_document_number(public_doc["document_number"])
+    return public_doc
+
+
 # ============================================================================
 # AUTH
 # ============================================================================
@@ -343,13 +361,13 @@ async def submit_kyc(data: KycSubmitIn, user: dict = Depends(get_current_user)):
     await db.kyc.update_one({"user_id": user["id"]}, {"$set": doc}, upsert=True)
     await db.users.update_one({"id": user["id"]}, {"$set": {"kyc_status": "pending"}})
     await _log_audit(user["id"], "kyc.submit")
-    return {"ok": True, "kyc": doc}
+    return {"ok": True, "kyc": _public_kyc(doc)}
 
 
 @user_r.get("/kyc")
 async def get_my_kyc(user: dict = Depends(get_current_user)):
     doc = await db.kyc.find_one({"user_id": user["id"]}, {"_id": 0})
-    return {"kyc": doc}
+    return {"kyc": _public_kyc(doc)}
 
 
 @user_r.get("/notifications")
