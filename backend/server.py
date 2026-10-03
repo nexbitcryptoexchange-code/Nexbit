@@ -360,16 +360,10 @@ async def my_notifications(user: dict = Depends(get_current_user)):
 
 @user_r.post("/api-keys")
 async def create_api_key(data: ApiKeyIn, user: dict = Depends(get_current_user)):
-    key = "nx_" + secrets.token_urlsafe(16)
-    secret = secrets.token_urlsafe(32)
-    row = {
-        "id": _new_id(), "user_id": user["id"], "label": data.label,
-        "permissions": data.permissions, "key": key, "secret": secret,
-        "created_at": _iso(_now()),
-    }
-    await db.api_keys.insert_one(row)
-    row.pop("_id", None)
-    return {"api_key": row}
+    raise HTTPException(
+        status_code=503,
+        detail="API keys are not enabled until signed API authentication is implemented",
+    )
 
 
 @user_r.get("/api-keys")
