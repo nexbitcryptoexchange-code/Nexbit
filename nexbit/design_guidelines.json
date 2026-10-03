@@ -1,0 +1,30 @@
+{
+  "project_name": "NEXBIT",
+  "theme": {
+    "mode": "dark",
+    "background_primary": "#070a12",
+    "background_secondary": "#0b0f1a",
+    "background_surface": "#111726",
+    "background_card": "rgba(17, 23, 38, 0.75)",
+    "background_elevated": "#161e31",
+    "border_subtle": "rgba(34, 227, 255, 0.12)",
+    "border_medium": "rgba(34, 227, 255, 0.25)",
+    "border_bright": "#00d4ff",
+    "text_primary": "#f1f5f9",
+    "text_secondary": "#94a3b8",
+    "text_muted": "#64748b",
+    "brand_cyan": "#00d4ff",
+    "brand_cyan_light": "#22e3ff",
+    "brand_cyan_glow": "rgba(0, 212, 255, 0.35)",
+    "buy_green": "#00c389",
+    "buy_green_bg": "rgba(0, 195, 137, 0.15)",
+    "sell_red": "#ff4d6b",
+    "sell_red_bg": "rgba(255, 77, 107, 0.15)",
+    "warning_amber": "#f59e0b"
+  },
+  "typography": {
+    "font_display": "'Chakra Petch', 'Sora', sans-serif",
+    "font_body": "'Manrope', sans-serif",
+    "font_numeric": "'JetBrains Mono', monospace"
+  }
+}
