@@ -303,6 +303,39 @@ class MatchingEngine:
 
             return await db.orders.find_one({"id": order_id}, {"_id": 0})
 
+    async def cancel(self, order_id: str, user: dict, adjust: Callable[..., Awaitable[dict]]) -> dict:
+        order = await db.orders.find_one({"id": order_id, "user_id": user["id"]}, {"_id": 0})
+        if not order:
+            raise HTTPException(404, "Order not found")
+        pair = order["pair"].upper()
+        async with self._lock(pair):
+            order = await db.orders.find_one({"id": order_id, "user_id": user["id"]}, {"_id": 0})
+            if not order or order.get("status") not in {"open", "partial"}:
+                raise HTTPException(400, "Order not open")
+            base, quote = self._parse_pair(pair)
+            remaining = float(order.get("remaining_qty") or 0.0)
+            if remaining <= 0:
+                raise HTTPException(400, "Order has no remaining quantity")
+            if order["side"] == "buy":
+                market = await db.market_pairs.find_one({"symbol": pair}, {"_id": 0, "taker_fee": 1})
+                fee = float((market or {}).get("taker_fee", 0.001))
+                release = remaining * float(order["price"]) * (1.0 + fee)
+                await adjust(user["id"], quote, "locked", -release, reason="trade.order.cancel", reference_id=order_id)
+                await adjust(user["id"], quote, "spot", release, reason="trade.order.cancel", reference_id=order_id)
+            else:
+                await adjust(user["id"], base, "locked", -remaining, reason="trade.order.cancel", reference_id=order_id)
+                await adjust(user["id"], base, "spot", remaining, reason="trade.order.cancel", reference_id=order_id)
+            await db.orders.update_one(
+                {"id": order_id, "user_id": user["id"], "status": {"$in": ["open", "partial"]}},
+                {"$set": {
+                    "status": "cancelled",
+                    "remaining_qty": 0.0,
+                    "cancelled_at": _iso(_now()),
+                    "updated_at": _iso(_now()),
+                }},
+            )
+            return await db.orders.find_one({"id": order_id}, {"_id": 0})
+
     async def _candidates(self, pair: str, side: str, order_type: str, price: float | None) -> list[dict]:
         opposite = "sell" if side == "buy" else "buy"
         rows = await db.orders.find(
