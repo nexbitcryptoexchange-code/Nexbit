@@ -1062,7 +1062,7 @@ async def admin_dashboard():
     total_withdrawals = 0.0
     async for tx in db.transactions.find({"type": "deposit", "status": "completed"}, {"_id": 0, "amount": 1, "asset": 1}):
         total_deposits += tx["amount"] if tx["asset"] == "USDT" else tx["amount"] * 1000
-    async for tx in db.transactions.find({"type": "withdraw", "status": "approved"}, {"_id": 0, "amount": 1, "asset": 1}):
+    async for tx in db.transactions.find({"type": "withdraw", "status": "completed"}, {"_id": 0, "amount": 1, "asset": 1}):
         total_withdrawals += tx["amount"] if tx["asset"] == "USDT" else tx["amount"] * 1000
     trades_24h = await db.trades.count_documents({})
     volume_24h = 0.0
