@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from fastapi import HTTPException
+from pymongo import ReturnDocument
 
 from db import db, client
 from financial import to_decimal, to_decimal128
@@ -248,7 +249,7 @@ class MatchingEngine:
                         maker_new_filled = to_decimal(maker.get("filled_qty", 0)) + qty
                         maker_total = to_decimal(maker["quantity"])
                         maker_status = "filled" if maker_new_filled >= maker_total - Decimal("0.000000000001") else "partial"
-                        await db.orders.update_one(
+                        maker_update = await db.orders.update_one(
                             {"id": maker_id, "status": {"$in": ["open", "partial"]}},
                             {"$set": {
                                 "filled_qty": maker_new_filled,
@@ -258,6 +259,8 @@ class MatchingEngine:
                             }},
                             session=session,
                         )
+                        if maker_update.matched_count != 1:
+                            raise HTTPException(409, "Resting order changed during matching; retry")
                         filled += qty
 
                     if filled > 0:
@@ -363,7 +366,7 @@ class MatchingEngine:
 class _DistributedPairLock:
     """Mongo-backed lease lock shared by all API instances for one pair."""
 
-    def __init__(self, pair: str, lease_seconds: int = 60) -> None:
+    def __init__(self, pair: str, lease_seconds: int = 300) -> None:
         self.pair = pair
         self.lease_seconds = lease_seconds
         self.owner = _new_id()
@@ -379,7 +382,7 @@ class _DistributedPairLock:
                     {"key": f"pair:{self.pair}", "$or": [{"expires_at": {"$lte": now}}, {"owner": self.owner}]},
                     {"$set": {"owner": self.owner, "expires_at": now + timedelta(seconds=self.lease_seconds), "updated_at": now}},
                     upsert=True,
-                    return_document=True,
+                    return_document=ReturnDocument.AFTER,
                 )
                 if result and result.get("owner") == self.owner:
                     return self
