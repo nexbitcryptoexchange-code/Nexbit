@@ -76,6 +76,27 @@ async def _log_audit(actor_id: str, action: str, target: str = "", meta: Optiona
     })
 
 
+async def _store_refresh_session(user_id: str, refresh_token: str) -> None:
+    await db.auth_sessions.insert_one({
+        "id": _new_id(),
+        "user_id": user_id,
+        "token_hash": hashlib.sha256(refresh_token.encode("utf-8")).hexdigest(),
+        "expires_at": _now() + timedelta(days=7),
+        "revoked": False,
+        "created_at": _iso(_now()),
+    })
+
+
+async def _revoke_refresh_session(refresh_token: Optional[str]) -> None:
+    if not refresh_token:
+        return
+    token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+    await db.auth_sessions.update_one(
+        {"token_hash": token_hash, "revoked": False},
+        {"$set": {"revoked": True, "revoked_at": _iso(_now())}},
+    )
+
+
 def _public_user(u: dict) -> dict:
     return {
         "id": u["id"],
@@ -131,6 +152,7 @@ async def register(data: RegisterIn, response: Response):
         })
     access = create_access_token(uid, email, "user")
     refresh = create_refresh_token(uid)
+    await _store_refresh_session(uid, refresh)
     set_auth_cookies(response, access, refresh)
     await _log_audit(uid, "auth.register")
     # fire-and-forget welcome / verification email
@@ -168,13 +190,15 @@ async def login(data: LoginIn, request: Request, response: Response):
     u["last_login"] = _iso(_now())
     access = create_access_token(u["id"], u["email"], u.get("role", "user"))
     refresh = create_refresh_token(u["id"])
+    await _store_refresh_session(u["id"], refresh)
     set_auth_cookies(response, access, refresh)
     await _log_audit(u["id"], "auth.login")
     return {"user": _public_user(u), "access_token": access}
 
 
 @auth.post("/logout")
-async def logout(response: Response, user: dict = Depends(get_current_user)):
+async def logout(request: Request, response: Response, user: dict = Depends(get_current_user)):
+    await _revoke_refresh_session(request.cookies.get("refresh_token"))
     clear_auth_cookies(response)
     await _log_audit(user["id"], "auth.logout")
     return {"ok": True}
@@ -196,11 +220,21 @@ async def refresh(request: Request, response: Response):
             raise HTTPException(status_code=401, detail="Invalid token type")
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
+    token_hash = hashlib.sha256(rt.encode("utf-8")).hexdigest()
+    claimed = await db.auth_sessions.update_one(
+        {"token_hash": token_hash, "user_id": payload["sub"], "revoked": False},
+        {"$set": {"revoked": True, "revoked_at": _iso(_now())}},
+    )
+    if claimed.modified_count != 1:
+        raise HTTPException(status_code=401, detail="Refresh token revoked or already used")
     u = await db.users.find_one({"id": payload["sub"]})
     if not u:
         raise HTTPException(status_code=401, detail="User not found")
+    if u.get("status") in {"banned", "suspended"}:
+        raise HTTPException(status_code=403, detail="Account unavailable")
     access = create_access_token(u["id"], u["email"], u.get("role", "user"))
     new_refresh = create_refresh_token(u["id"])
+    await _store_refresh_session(u["id"], new_refresh)
     set_auth_cookies(response, access, new_refresh)
     return {"ok": True}
 
@@ -235,6 +269,10 @@ async def reset(data: ResetIn):
         raise HTTPException(status_code=400, detail="Token expired")
     await db.users.update_one({"id": rec["user_id"]}, {"$set": {"password_hash": hash_password(data.password)}})
     await db.password_reset_tokens.update_one({"id": rec["id"]}, {"$set": {"used": True}})
+    await db.auth_sessions.update_many(
+        {"user_id": rec["user_id"], "revoked": False},
+        {"$set": {"revoked": True, "revoked_at": _iso(_now()), "revoke_reason": "password_reset"}},
+    )
     return {"ok": True}
 
 
