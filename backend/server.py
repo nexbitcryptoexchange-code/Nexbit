@@ -1044,6 +1044,9 @@ async def admin_list_pairs():
 @admin_r.post("/pairs")
 async def admin_add_pair(data: MarketPairIn, actor: dict = Depends(require_admin)):
     row = data.model_dump()
+    row["symbol"] = row["symbol"].upper()
+    row["base"] = row["base"].upper()
+    row["quote"] = row["quote"].upper()
     row["id"] = _new_id()
     row["created_at"] = _iso(_now())
     await db.market_pairs.update_one({"symbol": row["symbol"]}, {"$set": row}, upsert=True)
@@ -1203,6 +1206,15 @@ async def _seed() -> None:
     # No demo users, demo balances, or sample trades are ever seeded.
     # Real balances can only originate from the ledger/admin controls or verified
     # on-chain settlement once custody integration is configured.
+
+    # Remove malformed market-pair records created by older/admin input paths.
+    await db.market_pairs.delete_many({
+        "$or": [
+            {"symbol": {"$in": [None, ""]}},
+            {"base": {"$in": [None, ""]}},
+            {"quote": {"$in": [None, ""]}},
+        ]
+    })
 
     # Default market pairs
     if await db.market_pairs.count_documents({}) == 0:
