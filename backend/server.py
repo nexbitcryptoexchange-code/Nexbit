@@ -616,25 +616,38 @@ async def deposit(data: DepositIn, user: dict = Depends(get_current_user)):
 
 @wallet_r.post("/withdraw")
 async def withdraw(data: WithdrawIn, user: dict = Depends(get_current_user)):
-    asset = data.asset.upper()
-    network = (data.network or asset).upper()
+    asset = data.asset.upper().strip()
+    network = (data.network or asset).upper().strip()
+    address = data.address.strip()
+
+    if not asset or not network:
+        raise HTTPException(400, "Asset and network are required")
+    if len(address) < 8 or len(address) > 256:
+        raise HTTPException(400, "Invalid withdrawal address")
+    try:
+        custody.validate_asset_network(asset, network)
+    except CustodyProviderError as exc:
+        raise HTTPException(400, str(exc))
+
     now = _iso(_now())
     tx = {
         "id": _new_id(), "user_id": user["id"], "type": "withdraw",
         "asset": asset, "amount": data.amount, "status": "pending",
-        "address": data.address, "network": network,
+        "address": address, "network": network,
+        "reference_id": _new_id(),
         "created_at": now,
     }
-    try:
-        async with await db.client.start_session() as session:
-            async with session.start_transaction():
-                await _adjust(user["id"], asset, "spot", -data.amount, session=session)
-                await _adjust(user["id"], asset, "locked", data.amount, session=session)
-                await db.transactions.insert_one(tx, session=session)
-    except Exception:
-        raise
+    async with await db.client.start_session() as session:
+        async with session.start_transaction():
+            await _adjust(user["id"], asset, "spot", -data.amount, session=session)
+            await _adjust(user["id"], asset, "locked", data.amount, session=session)
+            await db.transactions.insert_one(tx, session=session)
     tx.pop("_id", None)
-    await _log_audit(user["id"], "wallet.withdraw.request", meta={"asset": asset, "amount": data.amount})
+    await _log_audit(
+        user["id"], "wallet.withdraw.request",
+        target=tx["id"],
+        meta={"asset": asset, "amount": data.amount, "network": network},
+    )
     return {"tx": tx}
 
 
@@ -1174,56 +1187,109 @@ async def admin_tx_decision(tx_id: str, data: AdminTxDecisionIn, actor: dict = D
     tx = await db.transactions.find_one({"id": tx_id})
     if not tx:
         raise HTTPException(404, "Not found")
-    if tx["status"] != "pending":
+    if tx["status"] not in {"pending", "submitting"}:
         raise HTTPException(400, "Already decided")
-    if data.decision == "approved":
-        if tx["type"] == "withdraw":
-            custody_enabled = os.environ.get("NEXBIT_CUSTODY_ENABLED", "false").lower() == "true"
-            custody_provider = os.environ.get("NEXBIT_CUSTODY_PROVIDER", "").strip().lower()
-            if not (PRODUCTION_MODE and custody_enabled and custody_provider == "blockbee" and custody.enabled):
-                raise HTTPException(
-                    503,
-                    "Withdrawal custody is not configured; withdrawal remains pending",
+
+    if data.decision == "rejected":
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                changed = await db.transactions.update_one(
+                    {"id": tx_id, "status": "pending"},
+                    {"$set": {
+                        "status": "rejected",
+                        "decided_at": _iso(_now()),
+                        "reason": data.note,
+                    }},
+                    session=session,
                 )
-            if tx.get("payout_id"):
-                raise HTTPException(400, "Withdrawal payout already submitted")
-            try:
-                payout = await custody.create_withdrawal(
-                    tx["asset"],
-                    tx.get("network") or tx["asset"],
-                    tx["address"],
-                    tx["amount"],
-                )
-            except (CustodyNotConfigured, CustodyProviderError) as exc:
-                raise HTTPException(502, str(exc))
-            now = _iso(_now())
+                if changed.modified_count != 1:
+                    raise HTTPException(409, "Withdrawal is already being processed")
+                if tx["type"] == "withdraw":
+                    await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"], session=session)
+                    await _adjust(tx["user_id"], tx["asset"], "spot", tx["amount"], session=session)
+        await _log_audit(actor["id"], "admin.tx.rejected", target=tx_id)
+    elif tx["type"] != "withdraw":
+        changed = await db.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {"status": "approved", "decided_at": _iso(_now())}},
+        )
+        if changed.modified_count != 1:
+            raise HTTPException(409, "Transaction is already decided")
+        await _log_audit(actor["id"], "admin.tx.approved", target=tx_id)
+    else:
+        custody_enabled = os.environ.get("NEXBIT_CUSTODY_ENABLED", "false").lower() == "true"
+        custody_provider = os.environ.get("NEXBIT_CUSTODY_PROVIDER", "").strip().lower()
+        if not (PRODUCTION_MODE and custody_enabled and custody_provider == "blockbee" and custody.enabled):
+            raise HTTPException(
+                503,
+                "Withdrawal custody is not configured; withdrawal remains pending",
+            )
+        if tx.get("payout_id"):
+            raise HTTPException(400, "Withdrawal payout already submitted")
+
+        try:
+            custody.validate_asset_network(tx["asset"], tx.get("network") or tx["asset"])
+        except CustodyProviderError as exc:
+            raise HTTPException(400, str(exc))
+
+        # Claim the withdrawal before contacting the external provider. This closes
+        # the two-admin race: only one admin can move pending -> submitting.
+        claimed_at = _iso(_now())
+        claim = await db.transactions.update_one(
+            {"id": tx_id, "status": "pending", "payout_id": {"$exists": False}},
+            {"$set": {
+                "status": "submitting",
+                "submission_started_at": claimed_at,
+                "submission_actor_id": actor["id"],
+            }},
+        )
+        if claim.modified_count != 1:
+            raise HTTPException(409, "Withdrawal is already being processed")
+
+        try:
+            payout = await custody.create_withdrawal(
+                tx["asset"],
+                tx.get("network") or tx["asset"],
+                tx["address"],
+                tx["amount"],
+            )
+        except (CustodyNotConfigured, CustodyProviderError) as exc:
             await db.transactions.update_one(
-                {"id": tx_id, "status": "pending"},
+                {"id": tx_id, "status": "submitting"},
                 {"$set": {
-                    "status": "processing",
-                    "payout_id": payout["payout_id"],
-                    "payout_request_id": payout["request_id"],
-                    "payout_status": payout.get("status", "processing"),
-                    "provider": "blockbee",
-                    "approved_at": now,
-                    "decided_at": now,
+                    "status": "pending",
+                    "submission_error": str(exc),
+                    "submission_failed_at": _iso(_now()),
                 }},
             )
-        else:
-            await db.transactions.update_one({"id": tx_id}, {"$set": {"status": "approved", "decided_at": _iso(_now())}})
-    else:
-        if tx["type"] == "withdraw":
-            await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"])
-            await _adjust(tx["user_id"], tx["asset"], "spot", tx["amount"])
-        await db.transactions.update_one({"id": tx_id}, {"$set": {"status": "rejected", "decided_at": _iso(_now()), "reason": data.note}})
-    await _log_audit(actor["id"], f"admin.tx.{data.decision}", target=tx_id)
-    # notify user by email
+            raise HTTPException(502, str(exc))
+
+        now = _iso(_now())
+        updated = await db.transactions.update_one(
+            {"id": tx_id, "status": "submitting"},
+            {"$set": {
+                "status": "processing",
+                "payout_id": payout["payout_id"],
+                "payout_request_id": payout["request_id"],
+                "payout_status": payout.get("status", "processing"),
+                "provider": "blockbee",
+                "approved_at": now,
+                "decided_at": now,
+            }},
+        )
+        if updated.modified_count != 1:
+            raise HTTPException(409, "Withdrawal submission state changed unexpectedly")
+        await _log_audit(actor["id"], "admin.tx.approved", target=tx_id, meta={"payout_id": payout["payout_id"]})
+
+    # Notify only after the local decision/submission state is committed.
     try:
         u = await db.users.find_one({"id": tx["user_id"]}, {"_id": 0, "email": 1, "name": 1})
         if u and u.get("email"):
             await send_withdrawal_update(
                 to=u["email"], name=u.get("name") or u["email"],
-                asset=tx["asset"], amount=tx["amount"], status=data.decision, note=data.note,
+                asset=tx["asset"], amount=tx["amount"],
+                status="approved" if data.decision == "approved" else "rejected",
+                note=data.note,
             )
     except Exception as e:
         logger.warning("withdrawal email skipped: %s", e)
