@@ -163,6 +163,24 @@ class MatchingEngine:
                             delta=qty, session=session, reference_id=maker_id,
                             reason="trade.fill",
                         )
+                        # Buy orders reserve quote using the taker-fee ceiling.
+                        # When a resting buy acts as maker, release the reserved
+                        # fee spread immediately so locked funds cannot accumulate.
+                        if data.side == "sell" and data.type in {"limit", "market"}:
+                            reserved_fill = notional * (1.0 + taker_fee)
+                            actual_fill = notional + incoming_buyer_fee
+                            release = max(0.0, reserved_fill - actual_fill)
+                            if release > 0:
+                                await self._move(
+                                    user_id=buyer_id, asset=quote, bucket="locked",
+                                    delta=-release, session=session,
+                                    reference_id=maker_id, reason="trade.maker_fee_release",
+                                )
+                                await self._move(
+                                    user_id=buyer_id, asset=quote, bucket="spot",
+                                    delta=release, session=session,
+                                    reference_id=maker_id, reason="trade.maker_fee_release",
+                                )
                         if data.side == "buy" and data.type == "limit":
                             reserved_fill = notional * (1.0 + taker_fee)
                             actual_fill = notional + incoming_buyer_fee
@@ -193,6 +211,13 @@ class MatchingEngine:
                         total_fee = incoming_buyer_fee + seller_fee
                         treasury = os.environ.get("NEXBIT_FEE_TREASURY_USER_ID", "").strip()
                         if not treasury:
+                            treasury_cfg = await db.config.find_one(
+                                {"id": "fee_treasury"},
+                                {"_id": 0, "user_id": 1},
+                                session=session,
+                            )
+                            treasury = (treasury_cfg or {}).get("user_id", "").strip()
+                        if not treasury and total_fee > 0:
                             raise HTTPException(503, "Fee treasury is not configured")
                         if total_fee > 0:
                             await self._move(
