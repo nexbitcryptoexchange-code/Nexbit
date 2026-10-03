@@ -289,7 +289,7 @@ class MatchingEngine:
         if not order:
             raise HTTPException(404, "Order not found")
         pair = order["pair"].upper()
-        async with self._lock(pair):
+        async with self._lock(pair), _DistributedPairLock(pair):
             order = await db.orders.find_one({"id": order_id, "user_id": user["id"]}, {"_id": 0})
             if not order or order.get("status") not in {"open", "partial"}:
                 raise HTTPException(400, "Order not open")
