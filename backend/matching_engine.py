@@ -7,11 +7,13 @@ trade records and fee accounting in one MongoDB transaction.
 import asyncio
 import os
 import uuid
+import hashlib
+import json
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from fastapi import HTTPException
-from pymongo import ReturnDocument
+from pymongo import DuplicateKeyError, ReturnDocument
 
 from db import db, client
 from financial import to_decimal, to_decimal128
@@ -45,8 +47,9 @@ class MatchingEngine:
             return pair[:-4].upper(), "USDT"
         raise HTTPException(400, "Invalid pair")
 
-    async def place(self, data, user: dict) -> dict:
+    async def place(self, data, user: dict, idempotency_key: str | None = None) -> dict:
         pair = data.pair.upper()
+        request_fingerprint = hashlib.sha256(json.dumps({"pair": pair, "side": data.side, "type": data.type, "quantity": str(data.quantity), "price": str(data.price) if data.price is not None else None, "stop_price": str(data.stop_price) if data.stop_price is not None else None}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         base, quote = self._parse_pair(pair)
         lock = self._lock(pair)
 
@@ -111,6 +114,19 @@ class MatchingEngine:
 
             order_id = _new_id()
             created = _iso(_now())
+
+            if idempotency_key:
+                try:
+                    await db.order_idempotency.insert_one({"user_id": user["id"], "key": idempotency_key, "fingerprint": request_fingerprint, "order_id": order_id, "created_at": created})
+                except DuplicateKeyError:
+                    existing = await db.order_idempotency.find_one({"user_id": user["id"], "key": idempotency_key}, {"_id": 0})
+                    if not existing or existing.get("fingerprint") != request_fingerprint:
+                        raise HTTPException(409, "Idempotency key was already used for a different order")
+                    existing_order = await db.orders.find_one({"id": existing["order_id"]}, {"_id": 0})
+                    if existing_order:
+                        return existing_order
+                    await db.order_idempotency.delete_one({"user_id": user["id"], "key": idempotency_key})
+                    await db.order_idempotency.insert_one({"user_id": user["id"], "key": idempotency_key, "fingerprint": request_fingerprint, "order_id": order_id, "created_at": created})
 
             order = {
                 "id": order_id,
