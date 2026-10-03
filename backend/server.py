@@ -617,16 +617,22 @@ async def deposit(data: DepositIn, user: dict = Depends(get_current_user)):
 @wallet_r.post("/withdraw")
 async def withdraw(data: WithdrawIn, user: dict = Depends(get_current_user)):
     asset = data.asset.upper()
-    # Hold funds
-    await _adjust(user["id"], asset, "spot", -data.amount)
-    await _adjust(user["id"], asset, "locked", data.amount)
+    network = (data.network or asset).upper()
+    now = _iso(_now())
     tx = {
         "id": _new_id(), "user_id": user["id"], "type": "withdraw",
         "asset": asset, "amount": data.amount, "status": "pending",
-        "address": data.address, "network": data.network or asset,
-        "created_at": _iso(_now()),
+        "address": data.address, "network": network,
+        "created_at": now,
     }
-    await db.transactions.insert_one(tx)
+    try:
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                await _adjust(user["id"], asset, "spot", -data.amount, session=session)
+                await _adjust(user["id"], asset, "locked", data.amount, session=session)
+                await db.transactions.insert_one(tx, session=session)
+    except Exception:
+        raise
     tx.pop("_id", None)
     await _log_audit(user["id"], "wallet.withdraw.request", meta={"asset": asset, "amount": data.amount})
     return {"tx": tx}
@@ -798,41 +804,58 @@ async def blockbee_payout_webhook(request: Request):
         return Response(content="*ok*", media_type="text/plain")
 
     event_id = f"{payout_id}:{status}"
-    existing = await db.payout_events.find_one({"provider": "blockbee", "event_id": event_id}, {"_id": 0})
-    if existing:
+    now = _iso(_now())
+    try:
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                existing_event = await db.payout_events.find_one(
+                    {"provider": "blockbee", "event_id": event_id},
+                    {"_id": 0}, session=session,
+                )
+                if existing_event:
+                    return Response(content="*ok*", media_type="text/plain")
+
+                tx = await db.transactions.find_one(
+                    {"type": "withdraw", "payout_id": payout_id},
+                    {"_id": 0}, session=session,
+                )
+                if not tx:
+                    raise HTTPException(404, "Withdrawal not found")
+
+                await db.payout_events.insert_one({
+                    "provider": "blockbee", "event_id": event_id, "payout_id": payout_id,
+                    "status": status, "transaction_id": tx["id"], "created_at": now,
+                }, session=session)
+
+                if status == "done":
+                    await db.transactions.update_one(
+                        {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
+                        {"$set": {"status": "completed", "completed_at": now, "payout_status": "done"}},
+                        session=session,
+                    )
+                else:
+                    changed = await db.transactions.update_one(
+                        {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
+                        {"$set": {
+                            "status": "failed", "payout_status": status,
+                            "failure_reason": fields.get("error") or status, "failed_at": now,
+                        }},
+                        session=session,
+                    )
+                    if changed.modified_count:
+                        await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"], session=session)
+                        await _adjust(tx["user_id"], tx["asset"], "spot", tx["amount"], session=session)
+    except DuplicateKeyError:
         return Response(content="*ok*", media_type="text/plain")
 
-    tx = await db.transactions.find_one({"type": "withdraw", "payout_id": payout_id}, {"_id": 0})
-    if not tx:
-        raise HTTPException(404, "Withdrawal not found")
-
-    now = _iso(_now())
-    await db.payout_events.insert_one({
-        "provider": "blockbee", "event_id": event_id, "payout_id": payout_id,
-        "status": status, "transaction_id": tx["id"], "created_at": now,
-    })
-
-    if status == "done":
-        await db.transactions.update_one(
-            {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
-            {"$set": {"status": "completed", "completed_at": now, "payout_status": "done"}},
-        )
-    else:
-        changed = await db.transactions.update_one(
-            {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
-            {"$set": {
-                "status": "failed", "payout_status": status,
-                "failure_reason": fields.get("error") or status, "failed_at": now,
-            }},
-        )
-        if changed.modified_count:
-            await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"])
-            await _adjust(tx["user_id"], tx["asset"], "spot", tx["amount"])
     await _log_audit(
         tx["user_id"], f"wallet.withdraw.{status}", target=tx["id"],
         meta={"payout_id": payout_id, "error": fields.get("error")},
     )
     return Response(content="*ok*", media_type="text/plain")
+
+
+
 
 
 # ============================================================================
