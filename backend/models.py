@@ -144,6 +144,10 @@ class FeeConfigIn(BaseModel):
     withdraw_fee_pct: float
 
 
+class FeeTreasuryIn(BaseModel):
+    user_id: str = Field(min_length=1)
+
+
 class SupportTicketIn(BaseModel):
     subject: str
     message: str
