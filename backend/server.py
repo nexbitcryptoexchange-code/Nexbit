@@ -925,16 +925,18 @@ async def _reconcile_payout_transaction(
         raise HTTPException(502, "Custody provider returned an unknown payout status")
 
     if status == "done":
+        fields = {
+            "status": "completed",
+            "completed_at": now,
+            "payout_status": "done",
+            "provider_last_checked_at": now,
+            "provider_reconciled_by": source,
+        }
+        if txid:
+            fields["txid"] = txid
         changed = await db.transactions.update_one(
             {"id": tx["id"], "status": {"$in": ["submitting", "processing"]}},
-            {"$set": {
-                "status": "completed",
-                "completed_at": now,
-                "payout_status": "done",
-                "txid": txid,
-                "provider_last_checked_at": now,
-                "provider_reconciled_by": source,
-            }},
+            {"$set": fields},
             session=session,
         )
         return {"status": "completed", "changed": changed.modified_count == 1, "txid": txid}
