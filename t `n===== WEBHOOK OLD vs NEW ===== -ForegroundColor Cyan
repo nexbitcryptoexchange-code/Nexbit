@@ -1,0 +1,123 @@
+[1mdiff --git a/frontend/craco.config.js b/frontend/craco.config.js[m
+[1mindex b143725..ad59f76 100644[m
+[1m--- a/frontend/craco.config.js[m
+[1m+++ b/frontend/craco.config.js[m
+[36m@@ -69,31 +69,6 @@[m [mif (config.enableHealthCheck) {[m
+   healthPluginInstance = new WebpackHealthPlugin();[m
+ }[m
+ [m
+[31m-// Branded error overlay + preview health probe, dev server only. Fails open: a broken[m
+[31m-// overlay must degrade to "no overlay", never to "no dev server".[m
+[31m-let emergentOverlay;[m
+[31m-if (isDevServer && process.env.DISABLE_EMERGENT_OVERLAY !== "true") {[m
+[31m-  try {[m
+[31m-    emergentOverlay = require("@emergentbase/overlay/craco").emergentOverlayCraco({[m
+[31m-      root: __dirname,[m
+[31m-    });[m
+[31m-    // A wrong shape would otherwise TypeError at dev-server config time, past this catch.[m
+[31m-    if ([m
+[31m-      typeof emergentOverlay.devServer !== "function" ||[m
+[31m-      typeof emergentOverlay.attach !== "function" ||[m
+[31m-      typeof emergentOverlay.webpackPlugin?.apply !== "function"[m
+[31m-    ) {[m
+[31m-      throw new Error("unexpected adapter shape");[m
+[31m-    }[m
+[31m-  } catch (err) {[m
+[31m-    emergentOverlay = undefined;[m
+[31m-    console.warn([m
+[31m-      "[emergent-overlay] not loaded — overlay disabled:",[m
+[31m-      err instanceof Error ? err.message : err,[m
+[31m-    );[m
+[31m-  }[m
+[31m-}[m
+[31m-[m
+ let webpackConfig = {[m
+   eslint: {[m
+     configure: {[m
+[36m@@ -127,11 +102,6 @@[m [mlet webpackConfig = {[m
+       if (config.enableHealthCheck && healthPluginInstance) {[m
+         webpackConfig.plugins.push(healthPluginInstance);[m
+       }[m
+[31m-[m
+[31m-      // Overlay's HTML injection + compile-error capture; self-gates on mode !== development.[m
+[31m-      if (emergentOverlay) {[m
+[31m-        webpackConfig.plugins.push(emergentOverlay.webpackPlugin);[m
+[31m-      }[m
+       return webpackConfig;[m
+     },[m
+   },[m
+[36m@@ -158,72 +128,8 @@[m [mwebpackConfig.devServer = (devServerConfig) => {[m
+   return devServerConfig;[m
+ };[m
+ [m
+[31m-// Wrap with visual edits (automatically adds babel plugin, dev server, and overlay in dev mode)[m
+[31m-if (isDevServer) {[m
+[31m-  try {[m
+[31m-    const { withVisualEdits } = require("@emergentbase/visual-edits/craco");[m
+[31m-    webpackConfig = withVisualEdits(webpackConfig);[m
+[31m-  } catch (err) {[m
+[31m-    if (err.code === 'MODULE_NOT_FOUND' && err.message.includes('@emergentbase/visual-edits/craco')) {[m
+[31m-      console.warn([m
+[31m-        "[visual-edits] @emergentbase/visual-edits not installed — visual editing disabled."[m
+[31m-      );[m
+[31m-    } else {[m
+[31m-      throw err;[m
+[31m-    }[m
+[31m-  }[m
+[31m-}[m
+[31m-[m
+[31m-// Overlay wraps last: visual-edits assigns setupMiddlewares instead of chaining onto it,[m
+[31m-// so anything registered before it is dropped.[m
+[31m-if (emergentOverlay) {[m
+[31m-  const devServerBeforeOverlay = webpackConfig.devServer;[m
+[31m-[m
+[31m-  // Fail open at each call site too: a throw inside the adapter costs the overlay, never[m
+[31m-  // the dev server. Warns once, then this path stops calling it.[m
+[31m-  let overlay = emergentOverlay;[m
+[31m-  const overlayFailed = (site, err) => {[m
+[31m-    overlay = undefined;[m
+[31m-    console.warn([m
+[31m-      `[emergent-overlay] ${site} failed — overlay disabled:`,[m
+[31m-      err instanceof Error ? err.message : err,[m
+[31m-    );[m
+[31m-  };[m
+[31m-[m
+[31m-  webpackConfig.devServer = (devServerConfig) => {[m
+[31m-    devServerConfig = devServerBeforeOverlay(devServerConfig);[m
+[31m-[m
+[31m-    // Overlay owns runtime errors; webpack keeps compile errors.[m
+[31m-    try {[m
+[31m-      devServerConfig = overlay.devServer(devServerConfig);[m
+[31m-    } catch (err) {[m
+[31m-      overlayFailed("devServer config", err);[m
+[31m-    }[m
+[31m-[m
+[31m-    const previousSetupMiddlewares = devServerConfig.setupMiddlewares;[m
+[31m-[m
+[31m-    devServerConfig.setupMiddlewares = (middlewares, devServer) => {[m
+[31m-      // Registered ahead of the chain's own body parsers, which would consume the raw stream[m
+[31m-      // the overlay reads. Adapter taking a pre-parsed req.body is the overlay-side fix.[m
+[31m-      try {[m
+[31m-        if (overlay) overlay.attach(devServer);[m
+[31m-      } catch (err) {[m
+[31m-        overlayFailed("attach", err);[m
+[31m-      }[m
+[31m-[m
+[31m-      if (previousSetupMiddlewares) {[m
+[31m-        middlewares = previousSetupMiddlewares(middlewares, devServer);[m
+[31m-      }[m
+[31m-[m
+[31m-      return middlewares;[m
+[31m-    };[m
+[31m-[m
+[31m-    return devServerConfig;[m
+[31m-  };[m
+[31m-}[m
+[31m-[m
+ const configureDevServer = webpackConfig.devServer;[m
+ webpackConfig.devServer = (devServerConfig) =>[m
+   makeDevServerV5Compatible(configureDevServer(devServerConfig));[m
+ [m
+[31m-module.exports = webpackConfig;[m
+[32m+[m[32mmodule.exports = webpackConfig;[m
+\ No newline at end of file[m

@@ -1,0 +1,8 @@
+# Managed by Nexbit webhook-cron (pod-local syscron). DO NOT EDIT.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+JOB_ID=b775ae98-3ff4-418a-bf81-995c3e4740ee
+WEBHOOK_ENV_FILE=/app/backend/.env
+
+# CRON_API_URL must be supplied by the deployment environment; no service URL is baked into the repository.
+* * * * * root JOB_ID=b775ae98-3ff4-418a-bf81-995c3e4740ee /bin/sh /app/.nexbit/cron/watch_crons.sh >> /var/log/webhook-cron.log 2>&1

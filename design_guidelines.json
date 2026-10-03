@@ -1,0 +1,104 @@
+{
+  "project_name": "NEXBIT",
+  "theme": {
+    "mode": "dark",
+    "background_primary": "#070a12",
+    "background_secondary": "#0b0f1a",
+    "background_surface": "#111726",
+    "background_card": "rgba(17, 23, 38, 0.75)",
+    "background_elevated": "#161e31",
+    "border_subtle": "rgba(34, 227, 255, 0.12)",
+    "border_medium": "rgba(34, 227, 255, 0.25)",
+    "border_bright": "#00d4ff",
+    "text_primary": "#f1f5f9",
+    "text_secondary": "#94a3b8",
+    "text_muted": "#64748b",
+    "brand_cyan": "#00d4ff",
+    "brand_cyan_light": "#22e3ff",
+    "brand_cyan_glow": "rgba(0, 212, 255, 0.35)",
+    "buy_green": "#00c389",
+    "buy_green_bg": "rgba(0, 195, 137, 0.15)",
+    "sell_red": "#ff4d6b",
+    "sell_red_bg": "rgba(255, 77, 107, 0.15)",
+    "warning_amber": "#f59e0b"
+  },
+  "typography": {
+    "font_display": "'Chakra Petch', 'Sora', sans-serif",
+    "font_body": "'Manrope', sans-serif",
+    "font_numeric": "'JetBrains Mono', monospace",
+    "h1": "text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight",
+    "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight",
+    "h3": "text-xl sm:text-2xl font-semibold",
+    "h4": "text-lg sm:text-xl font-semibold",
+    "body": "text-base font-normal leading-relaxed",
+    "body_small": "text-sm font-normal text-slate-400",
+    "numeric_large": "font-mono font-bold tracking-tight text-xl sm:text-2xl",
+    "numeric_table": "font-mono text-sm tracking-tight text-right",
+    "badge_text": "text-xs font-semibold uppercase tracking-wider"
+  },
+  "visual_enhancers": {
+    "glassmorphism": "backdrop-blur-xl bg-[#111726]/75 border border-[#22e3ff]/15 shadow-[0_8px_32px_rgba(0,0,0,0.4)]",
+    "card_hover": "transition-all duration-200 hover:border-[#00d4ff]/40 hover:shadow-[0_0_20px_rgba(0,212,255,0.15)] hover:-translate-y-0.5",
+    "cyan_glow_btn": "bg-[#00d4ff] text-[#070a12] font-bold shadow-[0_0_20px_rgba(0,212,255,0.4)] hover:bg-[#22e3ff] hover:shadow-[0_0_28px_rgba(0,212,255,0.6)] transition-all",
+    "buy_btn": "bg-[#00c389] hover:bg-[#00e09e] text-slate-950 font-bold shadow-[0_0_15px_rgba(0,195,137,0.3)] transition-all",
+    "sell_btn": "bg-[#ff4d6b] hover:bg-[#ff6b84] text-white font-bold shadow-[0_0_15px_rgba(255,77,107,0.3)] transition-all",
+    "tracing_beam_border": "relative before:absolute before:inset-0 before:p-[1px] before:bg-gradient-to-r before:from-[#00d4ff] before:via-[#00c389] before:to-transparent before:rounded-xl before:-z-10",
+    "grid_background": "bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:24px_24px] opacity-40"
+  },
+  "candlestick_chart": {
+    "up_color": "#00c389",
+    "down_color": "#ff4d6b",
+    "bg_color": "#0b0f1a",
+    "grid_color": "#161e31",
+    "text_color": "#64748b"
+  },
+  "component_styling": {
+    "button": "px-4 py-2.5 rounded-lg text-sm font-semibold transition-all focus:outline-none focus:ring-2 focus:ring-[#00d4ff]/50 disabled:opacity-50 disabled:cursor-not-allowed",
+    "input": "w-full bg-[#0b0f1a] border border-[#22e3ff]/20 rounded-lg px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-[#00d4ff] focus:ring-1 focus:ring-[#00d4ff] transition-all font-mono",
+    "select": "w-full bg-[#0b0f1a] border border-[#22e3ff]/20 rounded-lg px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-[#00d4ff]",
+    "card": "bg-[#111726]/80 backdrop-blur-md border border-[#22e3ff]/15 rounded-xl p-6 shadow-xl",
+    "table": "w-full text-left border-collapse text-xs sm:text-sm",
+    "th": "bg-[#0e1422] text-slate-400 font-medium px-4 py-3 border-b border-[#1e293b] uppercase tracking-wider text-xs",
+    "td": "px-4 py-3 border-b border-[#161e31] text-slate-200 font-mono",
+    "badge_positive": "inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-[#00c389]/15 text-[#00c389] border border-[#00c389]/30",
+    "badge_negative": "inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-[#ff4d6b]/15 text-[#ff4d6b] border border-[#ff4d6b]/30",
+    "badge_neutral": "inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700"
+  },
+  "image_urls": {
+    "hero_network_bg": "https://images.unsplash.com/photo-1762279388956-1c098163a2a8?crop=entropy&cs=srgb&fm=jpg&q=85",
+    "bitcoin_3d": "https://images.pexels.com/photos/29110760/pexels-photo-29110760.jpeg?auto=compress&cs=tinysrgb&w=940",
+    "trading_chart_preview": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?crop=entropy&cs=srgb&fm=jpg&q=85",
+    "mobile_app_mockup": "https://images.unsplash.com/photo-1639389016105-2fb11199fb6b?crop=entropy&cs=srgb&fm=jpg&q=85"
+  },
+  "page_layouts": {
+    "landing": "Hero section with electro-cyan headline, animated crypto price ticker marquee, 24h market stats overview, core feature bento grid (Bank-grade Security, 100k TPS Engine, Global Liquidity, Multi-asset Storage), live trading preview widget, step-by-step onboarding CTA, trust & compliance badges, dark rich footer.",
+    "markets": "Header with global market metrics summary bar. Search bar + category tabs (All, Spot, Futures, Gainers, Losers, New). High-density numeric table with coin icon, symbol, price, 24h change %, 24h volume, 7d mini sparkline preview, and Quick Trade action button.",
+    "spot_trading": "Professional 4-quadrant layout: Left panel (Market pair selector + order book depth), Center panel (TradingView style candlestick chart with timeframe bar + open orders / trade history bottom panel), Right panel (Real-time orderbook with bid/ask depth visual bars + Buy/Sell order execution form with Limit/Market/Stop-Limit tabs and slider percentage triggers).",
+    "futures_trading": "High leverage derivative view: Leverage selector modal (1x to 125x), Cross/Isolated margin toggle, Mark Price / Index Price headers, Long (Green) vs Short (Red) CTA panels, Liquidation Price estimation calculator, Risk Ratio percentage bar, Open Positions tab with TP/SL triggers.",
+    "wallet": "Overview dashboard card with total balance hiding toggle ($/BTC), 3D asset distribution donut chart, quick action buttons (Deposit, Withdraw, Transfer), asset allocation list, deposit crypto address copy/QR modal, withdrawal verification workflow, and transaction history filterable table.",
+    "earn": "Crypto savings & staking portal: APY highlight cards (USDT 12% APY, BTC 5% APY, ETH 6.5% APY), flexible vs locked staking toggles, earnings calculator widget, active subscription management table.",
+    "auth": "Split screen layout: Left column contains high-tech NEXBIT glowing brand visual with live market ticker, Right column contains glassmorphic Auth card supporting Login, Signup with password strength meter, Email verification OTP step, 2FA prompt, and Human verification captcha.",
+    "settings": "Tabbed configuration dashboard: Profile info, Security settings (Password, 2FA, Anti-phishing code), Identity Verification (KYC status badge & document upload dropzone), Payment Methods (Bank account / P2P options), API Key Management (Create key with permissions), System Notifications.",
+    "admin_crm": "Dark left sidebar with neon cyan active states. Top header with admin notifications & quick search. KPI summary cards (Total Users, 24h Trading Vol, Pending KYC, Cold Wallet Balance). Real-time chart of system transactions. Deep tables for User Management, KYC approvals, Deposit/Withdrawal approval queue, Fee configurations, Risk management triggers, System Audit logs."
+  },
+  "instructions_to_main_agent": {
+    "tech_stack_note": "Project uses JavaScript React (.js files). Ensure all React files have valid JSX syntax without TypeScript type definitions.",
+    "data_testid_requirement": "EVERY button, input, link, table row, dropdown, and tab MUST have explicit data-testid attributes (e.g. data-testid='spot-buy-submit-button', data-testid='coin-search-input').",
+    "header_nav_rule": "Header/Navbar MUST have semi-transparent glass backdrop (backdrop-blur-xl bg-[#0b0f1a]/80) with border-b border-[#22e3ff]/15 and NEVER be completely transparent.",
+    "color_discipline": "Primary accent MUST be electric cyan #00d4ff / #22e3ff. Use green #00c389 for buy/positive and red #ff4d6b for sell/negative. Do NOT use purple or default blue.",
+    "typography_discipline": "Use JetBrains Mono for numbers, prices, orderbook data, and code. Use modern tech sans for headers."
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. Avoid AI slop: create distinctive, sharp frontends.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Do not make generic centered layouts. Use asymmetrical grids, split views, and left-aligned dense layouts.",
+    "Create depth through layered design elements with z-index hierarchy and glassmorphism.",
+    "You MUST NOT apply universal transitions like transition: all. Always add specific transitions (e.g., transition: color 0.2s, background-color 0.2s).",
+    "You MUST NOT center align the app container (.App { text-align: center }).",
+    "Always use modern pill-shaped or sharp button styles with interaction animations.",
+    "NEVER use emoji characters for icons. Use lucide-react or phosphor icons.",
+    "Every interaction needs micro-animations - hover states, transitions, entrance animations.",
+    "Use generous padding inside bordered containers (p-6 or p-8) to prevent text collision.",
+    "All interactive elements MUST include data-testid attribute in kebab-case."
+  ]
+}
