@@ -655,17 +655,30 @@ async def withdraw(data: WithdrawIn, user: dict = Depends(get_current_user)):
 async def transfer(data: TransferIn, user: dict = Depends(get_current_user)):
     if data.from_wallet == data.to_wallet:
         raise HTTPException(400, "Source and destination must differ")
-    asset = data.asset.upper()
-    await _adjust(user["id"], asset, data.from_wallet, -data.amount)
-    await _adjust(user["id"], asset, data.to_wallet, data.amount)
+    if data.amount <= 0:
+        raise HTTPException(400, "Transfer amount must be positive")
+    if data.from_wallet not in {"spot", "futures", "earn"} or data.to_wallet not in {"spot", "futures", "earn"}:
+        raise HTTPException(400, "Invalid wallet bucket")
+
+    asset = data.asset.upper().strip()
     tx = {
         "id": _new_id(), "user_id": user["id"], "type": "transfer",
         "asset": asset, "amount": data.amount, "status": "completed",
         "from_wallet": data.from_wallet, "to_wallet": data.to_wallet,
+        "reference_id": _new_id(),
         "created_at": _iso(_now()),
     }
-    await db.transactions.insert_one(tx)
+    async with await db.client.start_session() as session:
+        async with session.start_transaction():
+            await _adjust(user["id"], asset, data.from_wallet, -data.amount, session=session)
+            await _adjust(user["id"], asset, data.to_wallet, data.amount, session=session)
+            await db.transactions.insert_one(tx, session=session)
     tx.pop("_id", None)
+    await _log_audit(
+        user["id"], "wallet.transfer",
+        target=tx["id"],
+        meta={"asset": asset, "amount": data.amount, "from": data.from_wallet, "to": data.to_wallet},
+    )
     return {"tx": tx}
 
 
@@ -936,6 +949,10 @@ fut_r = APIRouter(prefix="/futures", tags=["futures"])
 
 @fut_r.post("/order")
 async def open_position(data: FuturesOrderIn, user: dict = Depends(get_current_user)):
+    # Futures are fail-closed until a real execution/mark-price provider is configured.
+    # Never create a synthetic position or credit/debit balances from a demo price feed.
+    if os.environ.get("NEXBIT_FUTURES_ENABLED", "false").lower() != "true":
+        raise HTTPException(503, "Futures trading is not enabled until a real execution provider is configured")
     base, quote = _parse_pair(data.pair)
     mark = await get_price(base)
     if mark <= 0:
@@ -964,6 +981,8 @@ async def open_position(data: FuturesOrderIn, user: dict = Depends(get_current_u
 
 @fut_r.post("/close")
 async def close_position(data: ClosePositionIn, user: dict = Depends(get_current_user)):
+    if os.environ.get("NEXBIT_FUTURES_ENABLED", "false").lower() != "true":
+        raise HTTPException(503, "Futures trading is not enabled until a real execution provider is configured")
     p = await db.positions.find_one({"id": data.position_id, "user_id": user["id"]})
     if not p:
         raise HTTPException(404, "Position not found")
@@ -1039,6 +1058,10 @@ async def earn_products():
 
 @earn_r.post("/subscribe")
 async def earn_subscribe(data: EarnSubscribeIn, user: dict = Depends(get_current_user)):
+    # Do not move customer funds into an earn bucket unless an actual yield/staking
+    # provider and redemption flow are configured.
+    if os.environ.get("NEXBIT_EARN_ENABLED", "false").lower() != "true":
+        raise HTTPException(503, "Earn products are not enabled until a real yield provider is configured")
     p = next((x for x in DEFAULT_EARN_PRODUCTS if x["id"] == data.product_id), None)
     if not p:
         raise HTTPException(404, "Product not found")
