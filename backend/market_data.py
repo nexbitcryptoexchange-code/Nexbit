@@ -28,22 +28,6 @@ _last_fetch = 0.0
 _fetch_lock = asyncio.Lock()
 
 
-def _seed_prices() -> Dict[str, dict]:
-    """Fallback simulated prices when CoinGecko unreachable."""
-    out = {}
-    for c in UNIVERSE:
-        change = random.uniform(-5, 7)
-        price = c["seed"] * (1 + change / 100.0)
-        out[c["symbol"]] = {
-            "symbol": c["symbol"],
-            "name": c["name"],
-            "price": price,
-            "change_24h": change,
-            "volume_24h": random.uniform(1e7, 2e9),
-            "market_cap": price * random.uniform(1e7, 1e10),
-            "sparkline": [c["seed"] * (1 + random.uniform(-0.08, 0.08)) for _ in range(24)],
-        }
-    return out
 
 
 async def _fetch_coingecko() -> Optional[Dict[str, dict]]:
@@ -93,21 +77,13 @@ async def get_prices(force: bool = False) -> Dict[str, dict]:
             return _cache
         fresh = await _fetch_coingecko()
         if fresh is None:
-            # fallback
-            if not _cache:
-                _cache = _seed_prices()
-            else:
-                # mild jitter
-                for sym, row in _cache.items():
-                    jitter = random.uniform(-0.004, 0.004)
-                    row["price"] = max(0.00001, row["price"] * (1 + jitter))
-        else:
-            # merge, preserve prior for missing
-            for sym, row in fresh.items():
-                if row is not None:
-                    _cache[sym] = row
-            if not _cache:
-                _cache = _seed_prices()
+            # Fail closed. Never invent a market price when the external
+            # reference feed is unavailable.
+            _last_fetch = time.time()
+            return {}
+        for sym, row in fresh.items():
+            if row is not None:
+                _cache[sym] = row
         _last_fetch = time.time()
         return _cache
 
