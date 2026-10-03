@@ -114,6 +114,9 @@ class BlockBeeCustody:
             "minimum_transaction": data.get("minimum_transaction_coin"),
         }
 
+    def validate_asset_network(self, asset: str, network: str) -> str:
+        return _ticker(asset, network)
+
     async def create_withdrawal(self, asset: str, network: str, address: str, amount: Any) -> dict:
         ticker = _ticker(asset, network)
         request_data = await self._request(
