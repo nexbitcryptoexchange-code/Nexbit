@@ -1,11 +1,11 @@
 """WebSocket broadcast manager for NEXBIT realtime market data."""
 import asyncio
 import json
-import random
 from typing import Dict, Set
 from fastapi import WebSocket
 
-from market_data import get_prices, generate_order_book, generate_recent_trades, UNIVERSE
+from market_data import get_prices, UNIVERSE
+from db import db
 
 
 class ConnectionManager:
@@ -74,9 +74,6 @@ async def market_broadcaster() -> None:
                 for sym, row in prices.items():
                     if not row:
                         continue
-                    # Light jitter so prices visibly move between CG refreshes
-                    jitter = random.uniform(-0.0008, 0.0008)
-                    row["price"] = max(0.0001, row["price"] * (1 + jitter))
                     items.append({
                         "symbol": sym, "name": row["name"], "pair": f"{sym}/USDT",
                         "price": row["price"], "change_24h": row["change_24h"],
@@ -99,20 +96,38 @@ async def market_broadcaster() -> None:
                         })
                 elif ch.startswith("orderbook:"):
                     sym = ch.split(":", 1)[1].upper()
-                    row = prices.get(sym)
-                    if row:
-                        await manager.broadcast(ch, generate_order_book(row["price"], 15))
+                    pair = f"{sym}/USDT"
+                    rows = await db.orders.find(
+                        {"pair": pair, "status": {"$in": ["open", "partial"]}, "remaining_qty": {"$gt": 0}},
+                        {"_id": 0, "side": 1, "price": 1, "remaining_qty": 1},
+                    ).to_list(500)
+                    levels = {"bids": {}, "asks": {}}
+                    for order in rows:
+                        price = float(order.get("price") or 0)
+                        qty = float(order.get("remaining_qty") or 0)
+                        if price <= 0 or qty <= 0:
+                            continue
+                        bucket = levels["bids"] if order.get("side") == "buy" else levels["asks"]
+                        key = round(price, 8)
+                        bucket[key] = bucket.get(key, 0.0) + qty
+                    bids = [[p, q] for p, q in sorted(levels["bids"].items(), reverse=True)[:15]]
+                    asks = [[p, q] for p, q in sorted(levels["asks"].items())[:15]]
+                    await manager.broadcast(ch, {"bids": bids, "asks": asks})
                 elif ch.startswith("trades:"):
                     sym = ch.split(":", 1)[1].upper()
-                    row = prices.get(sym)
-                    if row and tick % 2 == 0:
-                        # one new synthetic trade every ~3s
+                    pair = f"{sym}/USDT"
+                    latest = await db.trades.find(
+                        {"pair": pair},
+                        {"_id": 0, "price": 1, "quantity": 1, "side": 1, "created_at": 1},
+                    ).sort("created_at", -1).limit(1).to_list(1)
+                    if latest:
+                        trade = latest[0]
                         await manager.broadcast(ch, {
                             "trade": {
-                                "t": int(asyncio.get_event_loop().time()),
-                                "price": row["price"] * (1 + random.uniform(-0.0004, 0.0004)),
-                                "qty": round(random.uniform(0.001, 0.9), 4),
-                                "side": random.choice(["buy", "sell"]),
+                                "t": trade.get("created_at"),
+                                "price": float(trade.get("price") or 0),
+                                "qty": float(trade.get("quantity") or 0),
+                                "side": trade.get("side"),
                             }
                         })
         except Exception:
