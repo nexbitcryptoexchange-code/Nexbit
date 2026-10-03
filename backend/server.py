@@ -463,8 +463,8 @@ async def candles(symbol: str, interval: str = "1m", limit: int = 60):
             dt = datetime.fromisoformat(tr["created_at"])
             ts = int(dt.timestamp())
             bucket = ts - (ts % seconds)
-            price = float(tr["price"])
-            qty = float(tr["quantity"])
+            price = to_decimal(tr["price"])
+            qty = to_decimal(tr["quantity"])
         except Exception:
             continue
         b = buckets.get(bucket)
@@ -490,10 +490,10 @@ async def orderbook(symbol: str):
     bids = []
     asks = []
     for row in rows:
-        remaining = max(0.0, float(row.get("quantity", 0)) - float(row.get("filled_qty", 0)))
+        remaining = max(Decimal("0"), to_decimal(row.get("quantity", 0)) - to_decimal(row.get("filled_qty", 0)))
         if remaining <= 0:
             continue
-        level = {"price": float(row["price"]), "qty": remaining}
+        level = {"price": float(to_decimal(row["price"])), "qty": float(remaining)}
         (bids if row["side"] == "buy" else asks).append(level)
     bids.sort(key=lambda x: x["price"], reverse=True)
     asks.sort(key=lambda x: x["price"])
@@ -511,8 +511,8 @@ async def recent_trades(symbol: str):
     for row in rows:
         items.append({
             "t": row.get("created_at"),
-            "price": float(row.get("price") or 0),
-            "qty": float(row.get("quantity") or 0),
+            "price": float(to_decimal(row.get("price") or 0)),
+            "qty": float(to_decimal(row.get("quantity") or 0)),
             "side": row.get("side"),
         })
     return {"items": items}
