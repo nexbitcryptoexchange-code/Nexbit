@@ -562,51 +562,10 @@ def _parse_pair(pair: str) -> tuple[str, str]:
 
 @trade_r.post("/order")
 async def place_order(data: OrderIn, user: dict = Depends(get_current_user)):
-    base, quote = _parse_pair(data.pair)
-    mark = await get_price(base)
-    if mark <= 0:
-        raise HTTPException(404, "Unknown market")
-    price = mark if data.type == "market" else (data.price or mark)
-    fee_rate = 0.001
-    status = "filled" if data.type == "market" else "open"
-    order = {
-        "id": _new_id(), "user_id": user["id"], "pair": f"{base}/{quote}",
-        "side": data.side, "type": data.type, "quantity": data.quantity,
-        "price": price, "stop_price": data.stop_price, "status": status,
-        "filled_qty": 0.0, "fee": 0.0, "fee_asset": quote,
-        "created_at": _iso(_now()),
-    }
-    if status == "filled":
-        notional = data.quantity * price
-        fee = notional * fee_rate
-        if data.side == "buy":
-            await _adjust(user["id"], quote, "spot", -(notional + fee))
-            await _adjust(user["id"], base, "spot", data.quantity)
-        else:
-            await _adjust(user["id"], base, "spot", -data.quantity)
-            await _adjust(user["id"], quote, "spot", notional - fee)
-        order["filled_qty"] = data.quantity
-        order["fee"] = fee
-        order["filled_at"] = _iso(_now())
-        # record trade
-        await db.trades.insert_one({
-            "id": _new_id(), "user_id": user["id"], "pair": order["pair"],
-            "side": data.side, "price": price, "quantity": data.quantity,
-            "fee": fee, "created_at": _iso(_now()),
-        })
-    else:
-        # Lock funds for limit order
-        if data.side == "buy":
-            await _adjust(user["id"], quote, "spot", -(data.quantity * price))
-            await _adjust(user["id"], quote, "locked", data.quantity * price)
-        else:
-            await _adjust(user["id"], base, "spot", -data.quantity)
-            await _adjust(user["id"], base, "locked", data.quantity)
-    await db.orders.insert_one(order)
-    order.pop("_id", None)
-    await _log_audit(user["id"], "trade.order", meta={"pair": order["pair"], "side": data.side, "status": status})
-    return {"order": order}
-
+    raise HTTPException(
+        503,
+        "Spot matching engine is not enabled; orders cannot be filled against external reference prices",
+    )
 
 @trade_r.get("/orders")
 async def orders(status: Optional[str] = None, user: dict = Depends(get_current_user)):
@@ -904,9 +863,21 @@ async def admin_tx_decision(tx_id: str, data: AdminTxDecisionIn, actor: dict = D
     if tx["status"] != "pending":
         raise HTTPException(400, "Already decided")
     if data.decision == "approved":
-        # finalize withdraw: remove from locked
         if tx["type"] == "withdraw":
-            await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"])
+            # Approval is not a blockchain broadcast. Until a configured custody
+            # signer exists, fail closed rather than marking an off-chain withdrawal
+            # as approved/completed.
+            custody_enabled = os.environ.get("NEXBIT_CUSTODY_ENABLED", "false").lower() == "true"
+            custody_provider = os.environ.get("NEXBIT_CUSTODY_PROVIDER", "").strip()
+            if not (PRODUCTION_MODE and custody_enabled and custody_provider):
+                raise HTTPException(
+                    503,
+                    "Withdrawal custody is not configured; withdrawal remains pending",
+                )
+            raise HTTPException(
+                501,
+                "Custody provider integration is not implemented yet",
+            )
         await db.transactions.update_one({"id": tx_id}, {"$set": {"status": "approved", "decided_at": _iso(_now())}})
     else:
         if tx["type"] == "withdraw":
@@ -1137,44 +1108,15 @@ async def _seed() -> None:
         for asset in ["USDT", "BTC", "ETH"]:
             await db.wallets.insert_one({
                 "id": _new_id(), "user_id": uid, "asset": asset,
-                "spot": 10000.0 if asset == "USDT" else 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+                "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
                 "updated_at": _iso(_now()),
             })
     elif existing and admin_password and not verify_password(admin_password, existing.get("password_hash", "")):
         await db.users.update_one({"id": existing["id"]}, {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}})
 
-    # Demo user is strictly disabled in production.
-    if PRODUCTION_MODE:
-        return
-    demo_email = os.environ.get("DEMO_USER_EMAIL", "demo@nexbit.com")
-    demo_password = os.environ.get("DEMO_USER_PASSWORD", "Demo@12345")
-    demo = await db.users.find_one({"email": demo_email})
-    if not demo:
-        uid = _new_id()
-        await db.users.insert_one({
-            "id": uid, "email": demo_email, "name": "Demo Trader",
-            "password_hash": hash_password(demo_password), "role": "user",
-            "status": "active", "kyc_status": "approved", "email_verified": True,
-            "twofa_enabled": False, "country": "US", "created_at": _iso(_now()),
-        })
-        starts = {"USDT": 12431.20, "BTC": 0.082431, "ETH": 1.41256, "SOL": 25.5, "BNB": 2.0, "XRP": 150.0, "DOGE": 500.0, "AVAX": 3.0, "LINK": 10.0, "ADA": 200.0}
-        for asset, amt in starts.items():
-            await db.wallets.insert_one({
-                "id": _new_id(), "user_id": uid, "asset": asset,
-                "spot": amt, "futures": 500.0 if asset == "USDT" else 0.0, "earn": 0.0, "locked": 0.0,
-                "updated_at": _iso(_now()),
-            })
-        # a few sample trades + orders
-        for sym in ["BTC", "ETH", "SOL"]:
-            p = await get_price(sym)
-            if p > 0:
-                await db.trades.insert_one({
-                    "id": _new_id(), "user_id": uid, "pair": f"{sym}/USDT",
-                    "side": random.choice(["buy", "sell"]),
-                    "price": p * random.uniform(0.98, 1.02),
-                    "quantity": random.uniform(0.01, 0.3),
-                    "fee": 1.2, "created_at": _iso(_now() - timedelta(hours=random.randint(1, 48))),
-                })
+    # No demo users, demo balances, or sample trades are ever seeded.
+    # Real balances can only originate from the ledger/admin controls or verified
+    # on-chain settlement once custody integration is configured.
 
     # Default market pairs
     if await db.market_pairs.count_documents({}) == 0:
