@@ -118,7 +118,7 @@ export default function Trade() {
             <div className={`text-xs font-mono-nx ${ticker?.change_24h >= 0 ? "text-buy" : "text-sell"}`}>{fmtPct(ticker?.change_24h)}</div>
           </div>
           <div className="text-[11px] text-slate-500 flex flex-wrap gap-x-4 gap-y-0.5">
-            <span>24h H: <span className="text-slate-200 font-mono-nx">${fmtPrice((ticker?.price || 0) * 1.03)}</span></div>
+            <span>24h H: <span className="text-slate-200 font-mono-nx">${fmtPrice((ticker?.price || 0) * 1.03)}</span></span>
             <div>24h Low: <span className="text-slate-200 font-mono-nx">${fmtPrice((ticker?.price || 0) * 0.97)}</span></div>
             <div>24h Vol: <span className="text-slate-200 font-mono-nx">{fmtNum(ticker?.volume_24h, 0)}</span></div>
           </div>
