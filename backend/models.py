@@ -2,6 +2,7 @@
 from pydantic import BaseModel, EmailStr, Field, model_validator, ConfigDict
 from typing import Optional, List, Literal
 from datetime import datetime
+from decimal import Decimal
 
 
 class RegisterIn(BaseModel):
@@ -58,9 +59,9 @@ class OrderIn(BaseModel):
     pair: str
     side: Literal["buy", "sell"]
     type: Literal["market", "limit", "stop"]
-    quantity: float = Field(gt=0)
-    price: Optional[float] = None
-    stop_price: Optional[float] = None
+    quantity: Decimal = Field(gt=Decimal("0"))
+    price: Optional[Decimal] = None
+    stop_price: Optional[Decimal] = None
 
 
 class FuturesOrderIn(BaseModel):
@@ -68,10 +69,10 @@ class FuturesOrderIn(BaseModel):
     pair: str
     side: Literal["long", "short"]
     leverage: int = Field(ge=1, le=125)
-    quantity: float = Field(gt=0)
-    entry_price: Optional[float] = None
-    tp: Optional[float] = None
-    sl: Optional[float] = None
+    quantity: Decimal = Field(gt=Decimal("0"))
+    entry_price: Optional[Decimal] = None
+    tp: Optional[Decimal] = None
+    sl: Optional[Decimal] = None
 
 
 class ClosePositionIn(BaseModel):
@@ -81,13 +82,13 @@ class ClosePositionIn(BaseModel):
 class DepositIn(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
     asset: str
-    amount: float = Field(gt=0)
+    amount: Decimal = Field(gt=Decimal("0"))
 
 
 class WithdrawIn(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
     asset: str
-    amount: float = Field(gt=0)
+    amount: Decimal = Field(gt=Decimal("0"))
     address: str
     network: Optional[str] = None
 
@@ -95,7 +96,7 @@ class WithdrawIn(BaseModel):
 class TransferIn(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
     asset: str
-    amount: float = Field(gt=0)
+    amount: Decimal = Field(gt=Decimal("0"))
     from_wallet: Literal["spot", "futures", "earn"]
     to_wallet: Literal["spot", "futures", "earn"]
 
@@ -103,7 +104,7 @@ class TransferIn(BaseModel):
 class EarnSubscribeIn(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
     product_id: str
-    amount: float = Field(gt=0)
+    amount: Decimal = Field(gt=Decimal("0"))
 
 
 class ApiKeyIn(BaseModel):
@@ -126,7 +127,7 @@ class AdminBalanceAdjustmentIn(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
     user_id: str
     asset: str
-    amount: float = Field(gt=0)
+    amount: Decimal = Field(gt=Decimal("0"))
     action: Literal["credit", "debit"]
     note: Optional[str] = None
     reference_id: Optional[str] = Field(default=None, min_length=8, max_length=100)
@@ -137,10 +138,10 @@ class MarketPairIn(BaseModel):
     symbol: str = Field(min_length=5, max_length=30)
     base: str = Field(min_length=2, max_length=15)
     quote: str = Field(min_length=2, max_length=15)
-    min_qty: float = Field(default=0.0001, gt=0)
-    tick: float = Field(default=0.01, gt=0)
-    maker_fee: float = Field(default=0.001, ge=0)
-    taker_fee: float = Field(default=0.001, ge=0)
+    min_qty: Decimal = Field(default=Decimal("0.0001"), gt=Decimal("0"))
+    tick: Decimal = Field(default=Decimal("0.01"), gt=Decimal("0"))
+    maker_fee: Decimal = Field(default=Decimal("0.001"), ge=Decimal("0"))
+    taker_fee: Decimal = Field(default=Decimal("0.001"), ge=Decimal("0"))
     enabled: bool = True
 
     @model_validator(mode="after")
@@ -157,11 +158,11 @@ class MarketPairIn(BaseModel):
 
 class FeeConfigIn(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
-    spot_maker: float = Field(ge=0)
-    spot_taker: float = Field(ge=0)
-    futures_maker: float = Field(ge=0)
-    futures_taker: float = Field(ge=0)
-    withdraw_fee_pct: float = Field(ge=0)
+    spot_maker: Decimal = Field(ge=Decimal("0"))
+    spot_taker: Decimal = Field(ge=Decimal("0"))
+    futures_maker: Decimal = Field(ge=Decimal("0"))
+    futures_taker: Decimal = Field(ge=Decimal("0"))
+    withdraw_fee_pct: Decimal = Field(ge=Decimal("0"))
 
 
 class FeeTreasuryIn(BaseModel):
