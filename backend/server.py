@@ -23,7 +23,7 @@ if PRODUCTION_MODE:
     if len(jwt_secret) < 32 or jwt_secret.lower().startswith("change-me"):
         raise RuntimeError("JWT_SECRET must be a strong secret (32+ chars) when NEXBIT_PRODUCTION=true")
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query, WebSocket, WebSocketDisconnect, Header
 from pymongo.errors import DuplicateKeyError
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
@@ -994,10 +994,18 @@ def _parse_pair(pair: str) -> tuple[str, str]:
 
 
 @trade_r.post("/order")
-async def place_order(data: OrderIn, user: dict = Depends(get_current_user)):
+async def place_order(
+    data: OrderIn,
+    user: dict = Depends(get_current_user),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
     if user.get("status") != "active":
         raise HTTPException(403, "Trading is unavailable for this account")
-    order = await matching_engine.place(data, user)
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+        if not idempotency_key or len(idempotency_key) > 200:
+            raise HTTPException(400, "Idempotency-Key must be 1-200 characters")
+    order = await matching_engine.place(data, user, idempotency_key=idempotency_key)
     await _log_audit(
         user["id"],
         "trade.order",
