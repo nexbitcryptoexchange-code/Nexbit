@@ -167,16 +167,14 @@ class MatchingEngine:
                         for maker, qty, trade_price, notional, buyer_fee in plan:
                             maker_id = maker["id"]
                             maker_user = maker["user_id"]
-                            maker_side = maker["side"]
-                            maker_fee = notional * (maker_fee if maker_side == "buy" else maker_fee)
-                            # For the incoming side, buyer_fee is the applicable fee.
-                            # The resting order pays maker fee on its side.
+                            # The resting order is always maker; the incoming order
+                            # is always taker. The fee asset is quote.
                             if data.side == "buy":
-                                incoming_buyer_fee = buyer_fee
-                                resting_fee = notional * maker_fee if False else notional * maker_fee
-                            else:
                                 incoming_buyer_fee = notional * taker_fee
                                 resting_fee = notional * maker_fee
+                            else:
+                                incoming_buyer_fee = notional * maker_fee
+                                resting_fee = notional * taker_fee
 
                             buyer_id = user["id"] if data.side == "buy" else maker_user
                             seller_id = maker_user if data.side == "buy" else user["id"]
@@ -197,7 +195,7 @@ class MatchingEngine:
                                 delta=-qty, session=session, reference_id=order_id,
                                 reason="trade.fill",
                             )
-                            seller_fee = resting_fee if data.side == "buy" else notional * maker_fee
+                            seller_fee = resting_fee
                             await self._move(
                                 user_id=seller_id, asset=quote, bucket="spot",
                                 delta=notional - seller_fee, session=session,
