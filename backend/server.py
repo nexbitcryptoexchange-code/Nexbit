@@ -38,7 +38,7 @@ from models import (
     RegisterIn, LoginIn, ForgotIn, ResetIn, VerifyEmailIn, TwoFAIn, ProfileUpdateIn,
     KycSubmitIn, KycDecisionIn, OrderIn, FuturesOrderIn, ClosePositionIn,
     DepositIn, WithdrawIn, TransferIn, EarnSubscribeIn, ApiKeyIn,
-    AdminUserUpdateIn, AdminTxDecisionIn, AdminBalanceAdjustmentIn, MarketPairIn, FeeConfigIn,
+    AdminUserUpdateIn, AdminTxDecisionIn, AdminBalanceAdjustmentIn, MarketPairIn, FeeConfigIn, FeeTreasuryIn,
     SupportTicketIn, SupportReplyIn,
 )
 
@@ -1065,6 +1065,45 @@ async def admin_set_fees(data: FeeConfigIn, actor: dict = Depends(require_admin)
     return {"ok": True, "fees": row}
 
 
+@admin_r.get("/fees/treasury")
+async def admin_get_fee_treasury():
+    row = await db.config.find_one({"id": "fee_treasury"}, {"_id": 0, "user_id": 1})
+    return {"user_id": (row or {}).get("user_id")}
+
+
+@admin_r.post("/fees/treasury")
+async def admin_set_fee_treasury(data: FeeTreasuryIn, actor: dict = Depends(require_admin)):
+    target = await db.users.find_one(
+        {"id": data.user_id, "status": "active"},
+        {"_id": 0, "id": 1, "email": 1, "role": 1},
+    )
+    if not target:
+        raise HTTPException(404, "Active treasury user not found")
+    quote_assets = await db.market_pairs.distinct("quote", {"enabled": True})
+    quote_assets = [str(x).upper() for x in quote_assets if x]
+    if not quote_assets:
+        quote_assets = ["USDT"]
+    for asset in quote_assets:
+        await db.wallets.update_one(
+            {"user_id": data.user_id, "asset": asset},
+            {"$setOnInsert": {
+                "id": _new_id(), "user_id": data.user_id, "asset": asset,
+                "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+                "updated_at": _iso(_now()),
+            }},
+            upsert=True,
+        )
+    row = {
+        "id": "fee_treasury",
+        "user_id": data.user_id,
+        "updated_at": _iso(_now()),
+        "updated_by": actor["id"],
+    }
+    await db.config.update_one({"id": "fee_treasury"}, {"$set": row}, upsert=True)
+    await _log_audit(actor["id"], "admin.fee_treasury.update", target=data.user_id)
+    return {"ok": True, "treasury": {"user_id": data.user_id, "email": target["email"], "assets": quote_assets}}
+
+
 @admin_r.get("/audit")
 async def admin_audit(limit: int = 100):
     rows = await db.audit_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
@@ -1176,34 +1215,8 @@ async def _seed() -> None:
                 "enabled": True, "created_at": _iso(_now()),
             })
 
-    # Save test credentials file for testing agent
-    try:
-        memory_dir = Path("/app/memory")
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        (memory_dir / "test_credentials.md").write_text(
-            f"""# NEXBIT Test Credentials
-
-## Admin
-- email: {admin_email}
-- password: {admin_password}
-- role: admin
-- login: POST /api/auth/login
-
-## Demo User
-- email: {demo_email}
-- password: {demo_password}
-- role: user
-
-## Auth endpoints
-- POST /api/auth/register
-- POST /api/auth/login
-- POST /api/auth/logout
-- GET  /api/auth/me
-- POST /api/auth/refresh
-"""
-        )
-    except Exception as e:
-        logger.warning("could not write test_credentials.md: %s", e)
+    # No demo credentials are written or seeded. Production test credentials
+    # must be supplied externally and are never persisted by the backend.
 
 
 @app.on_event("startup")
