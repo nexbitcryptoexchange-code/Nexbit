@@ -226,12 +226,6 @@ def test_admin_dashboard_does_not_synthesize_non_usdt_values():
     assert isinstance(stats["withdrawals_by_asset"], dict)
 
 
-
-def test_admin_dashboard_uses_decimal_accounting_totals():
-    from decimal import Decimal
-
-    assert Decimal("0.1") + Decimal("0.2") == Decimal("0.3")
-
 def test_non_admin_cannot_read_admin_endpoints():
     token, _ = _register()
     headers = _headers(token)
