@@ -20,6 +20,7 @@ async def ensure_indexes() -> None:
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.orders.create_index([("user_id", 1), ("created_at", -1)])
     await db.orders.create_index([("pair", 1), ("status", 1)])
+    await db.orders.create_index([("pair", 1), ("side", 1), ("status", 1), ("price", 1), ("created_at", 1)])
     await db.transactions.create_index([("user_id", 1), ("created_at", -1)])
     await db.positions.create_index([("user_id", 1), ("status", 1)])
     await db.trades.create_index([("pair", 1), ("created_at", -1)])
