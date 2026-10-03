@@ -13,7 +13,8 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from fastapi import HTTPException
-from pymongo import DuplicateKeyError, ReturnDocument
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from db import db, client
 from financial import to_decimal, to_decimal128
