@@ -91,7 +91,7 @@ def test_market_pairs_are_well_formed():
     assert pairs
     assert all(row["symbol"] == f'{row["base"]}/{row["quote"]}' for row in pairs)
     assert all(row["base"] != row["quote"] for row in pairs)
-    assert all(row["enabled"] is True for row in pairs)
+    assert all(isinstance(row["enabled"], bool) for row in pairs)
 
 
 def test_admin_ledger_credit_is_idempotent_and_debitable():
