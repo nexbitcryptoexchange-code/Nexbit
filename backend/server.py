@@ -830,10 +830,10 @@ async def blockbee_deposit_webhook(request: Request):
         async with await db.client.start_session() as session:
             async with session.start_transaction():
                 event = await db.blockchain_events.find_one(
-                {"provider": "blockbee", "event_id": uuid_value},
-                {"_id": 0},
-                session=session,
-            )
+                    {"provider": "blockbee", "event_id": uuid_value},
+                    {"_id": 0},
+                    session=session,
+                )
             if event and event.get("status") == "confirmed":
                 return Response(content="*ok*", media_type="text/plain")
             await db.blockchain_events.update_one(
