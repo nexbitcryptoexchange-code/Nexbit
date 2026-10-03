@@ -379,27 +379,73 @@ async def ticker(symbol: str):
 @market_r.get("/candles/{symbol}")
 async def candles(symbol: str, interval: str = "1m", limit: int = 60):
     sym = symbol.upper()
-    base = await get_price(sym)
-    if base <= 0:
-        raise HTTPException(404, "Unknown symbol")
-    sec = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 60)
-    return {"items": generate_candles(base, count=min(limit, 200), interval_sec=sec)}
+    if interval not in {"1m", "5m", "15m", "1h", "4h", "1d"}:
+        raise HTTPException(400, "Unsupported interval")
+    seconds = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}[interval]
+    pair = f"{sym}/USDT"
+    trades = await db.trades.find(
+        {"pair": pair},
+        {"_id": 0, "price": 1, "quantity": 1, "created_at": 1},
+    ).sort("created_at", 1).limit(5000).to_list(5000)
+    buckets = {}
+    for tr in trades:
+        try:
+            dt = datetime.fromisoformat(tr["created_at"])
+            ts = int(dt.timestamp())
+            bucket = ts - (ts % seconds)
+            price = float(tr["price"])
+            qty = float(tr["quantity"])
+        except Exception:
+            continue
+        b = buckets.get(bucket)
+        if b is None:
+            buckets[b] = {"t": bucket, "o": price, "h": price, "l": price, "c": price, "v": qty}
+        else:
+            b["h"] = max(b["h"], price)
+            b["l"] = min(b["l"], price)
+            b["c"] = price
+            b["v"] += qty
+    items = sorted(buckets.values(), key=lambda x: x["t"])[-min(limit, 200):]
+    return {"items": items}
 
 
 @market_r.get("/orderbook/{symbol}")
 async def orderbook(symbol: str):
-    base = await get_price(symbol.upper())
-    if base <= 0:
-        raise HTTPException(404, "Unknown symbol")
-    return generate_order_book(base, levels=15)
+    sym = symbol.upper()
+    pair = f"{sym}/USDT"
+    rows = await db.orders.find(
+        {"pair": pair, "status": "open", "type": "limit"},
+        {"_id": 0, "side": 1, "price": 1, "quantity": 1, "filled_qty": 1},
+    ).to_list(5000)
+    bids = []
+    asks = []
+    for row in rows:
+        remaining = max(0.0, float(row.get("quantity", 0)) - float(row.get("filled_qty", 0)))
+        if remaining <= 0:
+            continue
+        level = {"price": float(row["price"]), "qty": remaining}
+        (bids if row["side"] == "buy" else asks).append(level)
+    bids.sort(key=lambda x: x["price"], reverse=True)
+    asks.sort(key=lambda x: x["price"])
+    return {"bids": bids[:100], "asks": asks[:100]}
 
 
 @market_r.get("/trades/{symbol}")
 async def recent_trades(symbol: str):
-    base = await get_price(symbol.upper())
-    if base <= 0:
-        raise HTTPException(404, "Unknown symbol")
-    return {"items": generate_recent_trades(base, 25)}
+    pair = f"{symbol.upper()}/USDT"
+    rows = await db.trades.find(
+        {"pair": pair},
+        {"_id": 0, "created_at": 1, "price": 1, "quantity": 1, "side": 1},
+    ).sort("created_at", -1).limit(100).to_list(100)
+    items = []
+    for row in rows:
+        items.append({
+            "t": row.get("created_at"),
+            "price": float(row.get("price") or 0),
+            "qty": float(row.get("quantity") or 0),
+            "side": row.get("side"),
+        })
+    return {"items": items}
 
 
 @market_r.get("/pairs")
