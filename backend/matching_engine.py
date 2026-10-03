@@ -117,7 +117,7 @@ class MatchingEngine:
 
             if idempotency_key:
                 try:
-                    await db.order_idempotency.insert_one({"user_id": user["id"], "key": idempotency_key, "fingerprint": request_fingerprint, "order_id": order_id, "created_at": created})
+                    await db.order_idempotency.insert_one({"user_id": user["id"], "key": idempotency_key, "fingerprint": request_fingerprint, "order_id": order_id, "status": "processing", "created_at": created})
                 except DuplicateKeyError:
                     existing = await db.order_idempotency.find_one({"user_id": user["id"], "key": idempotency_key}, {"_id": 0})
                     if not existing or existing.get("fingerprint") != request_fingerprint:
@@ -125,8 +125,7 @@ class MatchingEngine:
                     existing_order = await db.orders.find_one({"id": existing["order_id"]}, {"_id": 0})
                     if existing_order:
                         return existing_order
-                    await db.order_idempotency.delete_one({"user_id": user["id"], "key": idempotency_key})
-                    await db.order_idempotency.insert_one({"user_id": user["id"], "key": idempotency_key, "fingerprint": request_fingerprint, "order_id": order_id, "created_at": created})
+                    raise HTTPException(409, "Order request is already being processed; retry")
 
             order = {
                 "id": order_id,
@@ -300,6 +299,12 @@ class MatchingEngine:
                         }},
                         session=session,
                     )
+                    if idempotency_key:
+                        await db.order_idempotency.update_one(
+                            {"user_id": user["id"], "key": idempotency_key, "order_id": order_id},
+                            {"$set": {"status": "completed", "completed_at": _iso(_now())}},
+                            session=session,
+                        )
 
             return await db.orders.find_one({"id": order_id}, {"_id": 0})
 
