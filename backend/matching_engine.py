@@ -190,6 +190,21 @@ class MatchingEngine:
                                 delta=qty, session=session, reference_id=maker_id,
                                 reason="trade.fill",
                             )
+                            if data.side == "buy" and data.type == "limit":
+                                reserved_fill = notional * (1.0 + taker_fee)
+                                actual_fill = notional + incoming_buyer_fee
+                                release = max(0.0, reserved_fill - actual_fill)
+                                if release > 0:
+                                    await self._move(
+                                        user_id=buyer_id, asset=quote, bucket="locked",
+                                        delta=-release, session=session,
+                                        reference_id=order_id, reason="trade.price_improvement",
+                                    )
+                                    await self._move(
+                                        user_id=buyer_id, asset=quote, bucket="spot",
+                                        delta=release, session=session,
+                                        reference_id=order_id, reason="trade.price_improvement",
+                                    )
                             await self._move(
                                 user_id=seller_id, asset=base, bucket="locked",
                                 delta=-qty, session=session, reference_id=order_id,
