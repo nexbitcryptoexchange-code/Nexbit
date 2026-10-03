@@ -9,6 +9,7 @@ import random
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
+from urllib.parse import parse_qs
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
@@ -33,6 +34,7 @@ from auth_utils import (
 import market_data
 from market_data import UNIVERSE, STABLES, get_prices, get_price, generate_candles, generate_order_book, generate_recent_trades
 from matching_engine import matching_engine
+from custody import custody, CustodyNotConfigured, CustodyProviderError
 from emailer import send_welcome_verify, send_password_reset, send_withdrawal_update
 from models import (
     RegisterIn, LoginIn, ForgotIn, ResetIn, VerifyEmailIn, TwoFAIn, ProfileUpdateIn,
@@ -548,11 +550,65 @@ async def transactions(user: dict = Depends(get_current_user), limit: int = 100)
     return {"items": rows}
 
 
+@wallet_r.get("/deposit/address")
+async def deposit_address(
+    asset: str,
+    network: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    asset = asset.upper().strip()
+    network = (network or asset).upper().strip()
+    if not asset or not network:
+        raise HTTPException(400, "Asset and network are required")
+    if not (PRODUCTION_MODE and os.environ.get("NEXBIT_CUSTODY_ENABLED", "false").lower() == "true"):
+        raise HTTPException(503, "On-chain deposit custody is not enabled")
+    existing = await db.wallet_addresses.find_one(
+        {"user_id": user["id"], "asset": asset, "network": network},
+        {"_id": 0},
+    )
+    if existing:
+        return {"address": existing}
+    try:
+        created = await custody.create_deposit_address(user["id"], asset, network)
+    except (CustodyNotConfigured, CustodyProviderError) as exc:
+        raise HTTPException(503, str(exc))
+    now = _iso(_now())
+    row = {
+        "id": _new_id(),
+        "user_id": user["id"],
+        "asset": asset,
+        "network": network,
+        "address": created["address"],
+        "ticker": created["ticker"],
+        "callback_url": created["callback_url"],
+        "minimum_transaction": created.get("minimum_transaction"),
+        "created_at": now,
+        "updated_at": now,
+    }
+    try:
+        await db.wallet_addresses.insert_one(row)
+    except Exception:
+        existing = await db.wallet_addresses.find_one(
+            {"user_id": user["id"], "asset": asset, "network": network},
+            {"_id": 0},
+        )
+        if existing:
+            return {"address": existing}
+        raise
+    row.pop("_id", None)
+    await _log_audit(
+        user["id"],
+        "wallet.deposit.address.create",
+        meta={"asset": asset, "network": network},
+    )
+    return {"address": row}
+
+
 @wallet_r.post("/deposit")
 async def deposit(data: DepositIn, user: dict = Depends(get_current_user)):
-    # User-facing deposits never credit balances directly. A future blockchain
-    # watcher will create a verified ledger credit after confirmations.
-    raise HTTPException(410, "User deposits are disabled until on-chain confirmation is integrated")
+    # Balance credits come only from verified BlockBee confirmation webhooks
+    # or the explicit admin ledger adjustment route.
+    raise HTTPException(410, "Use /api/wallet/deposit/address to get a deposit address")
 
 
 @wallet_r.post("/withdraw")
@@ -589,6 +645,173 @@ async def transfer(data: TransferIn, user: dict = Depends(get_current_user)):
     await db.transactions.insert_one(tx)
     tx.pop("_id", None)
     return {"tx": tx}
+
+
+@api.post("/webhooks/blockbee/deposit")
+async def blockbee_deposit_webhook(request: Request):
+    if not custody.enabled:
+        raise HTTPException(503, "BlockBee custody is not configured")
+    raw = await request.body()
+    signature = request.headers.get("x-ca-signature", "")
+    if not custody.verify_signature(raw, signature):
+        logger.warning("Rejected BlockBee deposit webhook: invalid signature")
+        raise HTTPException(401, "Invalid signature")
+
+    fields = {key: values[-1] for key, values in parse_qs(raw.decode("utf-8"), keep_blank_values=True).items()}
+    user_id = fields.get("user_id", "")
+    nonce = fields.get("nonce", "")
+    uuid_value = fields.get("uuid", "")
+    address_in = fields.get("address_in", "")
+    pending = fields.get("pending", "")
+    asset = fields.get("asset", "").upper()
+    network = fields.get("network", "").upper()
+    if not user_id or not nonce or not uuid_value or not address_in or not asset or not network:
+        raise HTTPException(400, "Incomplete BlockBee deposit webhook")
+
+    address = await db.wallet_addresses.find_one(
+        {"user_id": user_id, "asset": asset, "network": network, "address": address_in},
+        {"_id": 0},
+    )
+    if not address:
+        raise HTTPException(404, "Unknown deposit address")
+    if f"nonce={nonce}" not in address.get("callback_url", ""):
+        raise HTTPException(403, "Invalid deposit nonce")
+
+    event = await db.blockchain_events.find_one({"provider": "blockbee", "event_id": uuid_value}, {"_id": 0})
+    if event and event.get("status") == "confirmed":
+        return Response(content="*ok*", media_type="text/plain")
+
+    now = _iso(_now())
+    event_doc = {
+        "provider": "blockbee", "event_id": uuid_value, "user_id": user_id,
+        "asset": asset, "network": network, "address": address_in,
+        "txid_in": fields.get("txid_in"), "pending": pending == "1",
+        "status": "pending" if pending == "1" else "confirmed", "updated_at": now,
+    }
+    if not event:
+        try:
+            await db.blockchain_events.insert_one(event_doc)
+        except Exception:
+            event = await db.blockchain_events.find_one({"provider": "blockbee", "event_id": uuid_value}, {"_id": 0})
+            if event and event.get("status") == "confirmed":
+                return Response(content="*ok*", media_type="text/plain")
+    else:
+        await db.blockchain_events.update_one(
+            {"provider": "blockbee", "event_id": uuid_value},
+            {"$set": event_doc},
+        )
+
+    if pending == "1":
+        return Response(content="*ok*", media_type="text/plain")
+
+    try:
+        amount = float(fields.get("value_forwarded_coin") or fields.get("value_coin") or 0)
+    except ValueError:
+        raise HTTPException(400, "Invalid deposit amount")
+    if amount <= 0:
+        raise HTTPException(400, "Invalid deposit amount")
+
+    existing_tx = await db.transactions.find_one({"type": "deposit", "reference_id": uuid_value}, {"_id": 0})
+    if existing_tx and existing_tx.get("status") == "completed":
+        await db.blockchain_events.update_one(
+            {"provider": "blockbee", "event_id": uuid_value},
+            {"$set": {"status": "confirmed", "updated_at": now}},
+        )
+        return Response(content="*ok*", media_type="text/plain")
+
+    await db.wallets.update_one(
+        {"user_id": user_id, "asset": asset},
+        {"$setOnInsert": {
+            "id": _new_id(), "user_id": user_id, "asset": asset,
+            "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0, "updated_at": now,
+        }},
+        upsert=True,
+    )
+    await db.wallets.update_one(
+        {"user_id": user_id, "asset": asset},
+        {"$inc": {"spot": amount}, "$set": {"updated_at": now}},
+    )
+    wallet = await db.wallets.find_one({"user_id": user_id, "asset": asset}, {"_id": 0})
+    await db.ledger_entries.insert_one({
+        "id": _new_id(), "user_id": user_id, "asset": asset, "bucket": "spot",
+        "delta": amount, "balance_after": float(wallet.get("spot") or 0),
+        "reason": "blockbee.deposit.confirmed", "reference_id": uuid_value, "created_at": now,
+    })
+    tx = {
+        "id": _new_id(), "user_id": user_id, "type": "deposit", "asset": asset,
+        "amount": amount, "status": "completed", "address": address_in,
+        "network": network, "txid": fields.get("txid_in"), "provider": "blockbee",
+        "reference_id": uuid_value, "created_at": now,
+    }
+    if not existing_tx:
+        await db.transactions.insert_one(tx)
+    await db.blockchain_events.update_one(
+        {"provider": "blockbee", "event_id": uuid_value},
+        {"$set": {
+            "status": "confirmed", "amount": amount, "txid_out": fields.get("txid_out"),
+            "confirmations": int(fields.get("confirmations") or 0), "updated_at": now,
+        }},
+    )
+    await _log_audit(
+        user_id, "wallet.deposit.confirmed",
+        meta={"asset": asset, "network": network, "amount": amount, "uuid": uuid_value},
+    )
+    return Response(content="*ok*", media_type="text/plain")
+
+
+@api.post("/webhooks/blockbee/payout")
+async def blockbee_payout_webhook(request: Request):
+    if not custody.enabled:
+        raise HTTPException(503, "BlockBee custody is not configured")
+    raw = await request.body()
+    signature = request.headers.get("x-ca-signature", "")
+    if not custody.verify_signature(raw, signature):
+        logger.warning("Rejected BlockBee payout webhook: invalid signature")
+        raise HTTPException(401, "Invalid signature")
+    fields = {key: values[-1] for key, values in parse_qs(raw.decode("utf-8"), keep_blank_values=True).items()}
+    payout_id = fields.get("id", "")
+    status = fields.get("status", "").lower()
+    if not payout_id or status not in {"done", "error", "expired"}:
+        raise HTTPException(400, "Invalid BlockBee payout webhook")
+    if payout_id == "00000000-0000-0000-0000-000000000000":
+        return Response(content="*ok*", media_type="text/plain")
+
+    event_id = f"{payout_id}:{status}"
+    existing = await db.payout_events.find_one({"provider": "blockbee", "event_id": event_id}, {"_id": 0})
+    if existing:
+        return Response(content="*ok*", media_type="text/plain")
+
+    tx = await db.transactions.find_one({"type": "withdraw", "payout_id": payout_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Withdrawal not found")
+
+    now = _iso(_now())
+    await db.payout_events.insert_one({
+        "provider": "blockbee", "event_id": event_id, "payout_id": payout_id,
+        "status": status, "transaction_id": tx["id"], "created_at": now,
+    })
+
+    if status == "done":
+        await db.transactions.update_one(
+            {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
+            {"$set": {"status": "completed", "completed_at": now, "payout_status": "done"}},
+        )
+    else:
+        changed = await db.transactions.update_one(
+            {"id": tx["id"], "status": {"$in": ["pending", "processing"]}},
+            {"$set": {
+                "status": "failed", "payout_status": status,
+                "failure_reason": fields.get("error") or status, "failed_at": now,
+            }},
+        )
+        if changed.modified_count:
+            await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"])
+            await _adjust(tx["user_id"], tx["asset"], "spot", tx["amount"])
+    await _log_audit(
+        tx["user_id"], f"wallet.withdraw.{status}", target=tx["id"],
+        meta={"payout_id": payout_id, "error": fields.get("error")},
+    )
+    return Response(content="*ok*", media_type="text/plain")
 
 
 # ============================================================================
@@ -911,21 +1134,39 @@ async def admin_tx_decision(tx_id: str, data: AdminTxDecisionIn, actor: dict = D
         raise HTTPException(400, "Already decided")
     if data.decision == "approved":
         if tx["type"] == "withdraw":
-            # Approval is not a blockchain broadcast. Until a configured custody
-            # signer exists, fail closed rather than marking an off-chain withdrawal
-            # as approved/completed.
             custody_enabled = os.environ.get("NEXBIT_CUSTODY_ENABLED", "false").lower() == "true"
-            custody_provider = os.environ.get("NEXBIT_CUSTODY_PROVIDER", "").strip()
-            if not (PRODUCTION_MODE and custody_enabled and custody_provider):
+            custody_provider = os.environ.get("NEXBIT_CUSTODY_PROVIDER", "").strip().lower()
+            if not (PRODUCTION_MODE and custody_enabled and custody_provider == "blockbee" and custody.enabled):
                 raise HTTPException(
                     503,
                     "Withdrawal custody is not configured; withdrawal remains pending",
                 )
-            raise HTTPException(
-                501,
-                "Custody provider integration is not implemented yet",
+            if tx.get("payout_id"):
+                raise HTTPException(400, "Withdrawal payout already submitted")
+            try:
+                payout = await custody.create_withdrawal(
+                    tx["asset"],
+                    tx.get("network") or tx["asset"],
+                    tx["address"],
+                    tx["amount"],
+                )
+            except (CustodyNotConfigured, CustodyProviderError) as exc:
+                raise HTTPException(502, str(exc))
+            now = _iso(_now())
+            await db.transactions.update_one(
+                {"id": tx_id, "status": "pending"},
+                {"$set": {
+                    "status": "processing",
+                    "payout_id": payout["payout_id"],
+                    "payout_request_id": payout["request_id"],
+                    "payout_status": payout.get("status", "processing"),
+                    "provider": "blockbee",
+                    "approved_at": now,
+                    "decided_at": now,
+                }},
             )
-        await db.transactions.update_one({"id": tx_id}, {"$set": {"status": "approved", "decided_at": _iso(_now())}})
+        else:
+            await db.transactions.update_one({"id": tx_id}, {"$set": {"status": "approved", "decided_at": _iso(_now())}})
     else:
         if tx["type"] == "withdraw":
             await _adjust(tx["user_id"], tx["asset"], "locked", -tx["amount"])
