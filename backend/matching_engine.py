@@ -8,7 +8,6 @@ import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, Awaitable
 
 from fastapi import HTTPException
 
@@ -43,12 +42,7 @@ class MatchingEngine:
             return pair[:-4].upper(), "USDT"
         raise HTTPException(400, "Invalid pair")
 
-    async def place(
-        self,
-        data,
-        user: dict,
-        adjust: Callable[..., Awaitable[dict]],
-    ) -> dict:
+    async def place(self, data, user: dict) -> dict:
         pair = data.pair.upper()
         base, quote = self._parse_pair(pair)
         lock = self._lock(pair)
@@ -115,28 +109,6 @@ class MatchingEngine:
             order_id = _new_id()
             created = _iso(_now())
 
-            # Reserve the complete incoming order before matching. This is done
-            # through the existing ledger helper so reservation and release keep
-            # the same immutable accounting format used everywhere else.
-            if data.side == "buy":
-                await adjust(
-                    user["id"], quote, "spot", -required_quote,
-                    reason="trade.order.reserve", reference_id=order_id,
-                )
-                await adjust(
-                    user["id"], quote, "locked", required_quote,
-                    reason="trade.order.reserve", reference_id=order_id,
-                )
-            else:
-                await adjust(
-                    user["id"], base, "spot", -float(data.quantity),
-                    reason="trade.order.reserve", reference_id=order_id,
-                )
-                await adjust(
-                    user["id"], base, "locked", float(data.quantity),
-                    reason="trade.order.reserve", reference_id=order_id,
-                )
-
             order = {
                 "id": order_id,
                 "user_id": user["id"],
@@ -155,15 +127,16 @@ class MatchingEngine:
                 "updated_at": created,
             }
 
-            # The reservation above uses the legacy helper outside a transaction.
-            # Once reserved, all matching state and the remaining balance movements
-            # are committed atomically. If the database cannot provide transactions,
-            # the match is rejected rather than partially settling.
-            try:
-                async with await client.start_session() as session:
-                    async with session.start_transaction():
-                        await db.orders.insert_one(order, session=session)
-                        filled = 0.0
+            async with await client.start_session() as session:
+                async with session.start_transaction():
+                    await db.orders.insert_one(order, session=session)
+                    if data.side == "buy":
+                        await self._move(user["id"], quote, "spot", -required_quote, session, order_id, "trade.order.reserve")
+                        await self._move(user["id"], quote, "locked", required_quote, session, order_id, "trade.order.reserve")
+                    else:
+                        await self._move(user["id"], base, "spot", -float(data.quantity), session, order_id, "trade.order.reserve")
+                        await self._move(user["id"], base, "locked", float(data.quantity), session, order_id, "trade.order.reserve")
+                    filled = 0.0
                         for maker, qty, trade_price, notional, buyer_fee in plan:
                             maker_id = maker["id"]
                             maker_user = maker["user_id"]
@@ -281,29 +254,10 @@ class MatchingEngine:
                             }},
                             session=session,
                         )
-            except HTTPException:
-                # The reservation must be returned if matching cannot commit.
-                if data.side == "buy":
-                    await adjust(user["id"], quote, "locked", -required_quote, reason="trade.order.rollback", reference_id=order_id)
-                    await adjust(user["id"], quote, "spot", required_quote, reason="trade.order.rollback", reference_id=order_id)
-                else:
-                    await adjust(user["id"], base, "locked", -float(data.quantity), reason="trade.order.rollback", reference_id=order_id)
-                    await adjust(user["id"], base, "spot", float(data.quantity), reason="trade.order.rollback", reference_id=order_id)
-                raise
-            except Exception as exc:
-                logger = __import__("logging").getLogger("nexbit.matching")
-                logger.exception("matching transaction failed")
-                if data.side == "buy":
-                    await adjust(user["id"], quote, "locked", -required_quote, reason="trade.order.rollback", reference_id=order_id)
-                    await adjust(user["id"], quote, "spot", required_quote, reason="trade.order.rollback", reference_id=order_id)
-                else:
-                    await adjust(user["id"], base, "locked", -float(data.quantity), reason="trade.order.rollback", reference_id=order_id)
-                    await adjust(user["id"], base, "spot", float(data.quantity), reason="trade.order.rollback", reference_id=order_id)
-                raise HTTPException(503, "Matching engine transaction failed") from exc
 
             return await db.orders.find_one({"id": order_id}, {"_id": 0})
 
-    async def cancel(self, order_id: str, user: dict, adjust: Callable[..., Awaitable[dict]]) -> dict:
+    async def cancel(self, order_id: str, user: dict) -> dict:
         order = await db.orders.find_one({"id": order_id, "user_id": user["id"]}, {"_id": 0})
         if not order:
             raise HTTPException(404, "Order not found")
@@ -316,24 +270,27 @@ class MatchingEngine:
             remaining = float(order.get("remaining_qty") or 0.0)
             if remaining <= 0:
                 raise HTTPException(400, "Order has no remaining quantity")
-            if order["side"] == "buy":
-                market = await db.market_pairs.find_one({"symbol": pair}, {"_id": 0, "taker_fee": 1})
-                fee = float((market or {}).get("taker_fee", 0.001))
-                release = remaining * float(order["price"]) * (1.0 + fee)
-                await adjust(user["id"], quote, "locked", -release, reason="trade.order.cancel", reference_id=order_id)
-                await adjust(user["id"], quote, "spot", release, reason="trade.order.cancel", reference_id=order_id)
-            else:
-                await adjust(user["id"], base, "locked", -remaining, reason="trade.order.cancel", reference_id=order_id)
-                await adjust(user["id"], base, "spot", remaining, reason="trade.order.cancel", reference_id=order_id)
-            await db.orders.update_one(
-                {"id": order_id, "user_id": user["id"], "status": {"$in": ["open", "partial"]}},
-                {"$set": {
-                    "status": "cancelled",
-                    "remaining_qty": 0.0,
-                    "cancelled_at": _iso(_now()),
-                    "updated_at": _iso(_now()),
-                }},
-            )
+            async with await client.start_session() as session:
+                async with session.start_transaction():
+                    if order["side"] == "buy":
+                        market = await db.market_pairs.find_one({"symbol": pair}, {"_id": 0, "taker_fee": 1}, session=session)
+                        fee = float((market or {}).get("taker_fee", 0.001))
+                        release = remaining * float(order["price"]) * (1.0 + fee)
+                        await self._move(user["id"], quote, "locked", -release, session, order_id, "trade.order.cancel")
+                        await self._move(user["id"], quote, "spot", release, session, order_id, "trade.order.cancel")
+                    else:
+                        await self._move(user["id"], base, "locked", -remaining, session, order_id, "trade.order.cancel")
+                        await self._move(user["id"], base, "spot", remaining, session, order_id, "trade.order.cancel")
+                    await db.orders.update_one(
+                        {"id": order_id, "user_id": user["id"], "status": {"$in": ["open", "partial"]}},
+                        {"$set": {
+                            "status": "cancelled",
+                            "remaining_qty": 0.0,
+                            "cancelled_at": _iso(_now()),
+                            "updated_at": _iso(_now()),
+                        }},
+                        session=session,
+                    )
             return await db.orders.find_one({"id": order_id}, {"_id": 0})
 
     async def _candidates(self, pair: str, side: str, order_type: str, price: float | None) -> list[dict]:
