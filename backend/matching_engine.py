@@ -7,7 +7,7 @@ trade records and fee accounting in one MongoDB transaction.
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from fastapi import HTTPException
@@ -358,6 +358,38 @@ class MatchingEngine:
             "reference_id": reference_id,
             "created_at": _iso(_now()),
         }, session=session)
+
+
+class _DistributedPairLock:
+    """Mongo-backed lease lock shared by all API instances for one pair."""
+
+    def __init__(self, pair: str, lease_seconds: int = 60) -> None:
+        self.pair = pair
+        self.lease_seconds = lease_seconds
+        self.owner = _new_id()
+
+    async def __aenter__(self):
+        deadline = _now() + timedelta(seconds=15)
+        while True:
+            now = _now()
+            if now >= deadline:
+                raise HTTPException(503, "Matching engine is busy; please retry")
+            try:
+                result = await db.matching_locks.find_one_and_update(
+                    {"key": f"pair:{self.pair}", "$or": [{"expires_at": {"$lte": now}}, {"owner": self.owner}]},
+                    {"$set": {"owner": self.owner, "expires_at": now + timedelta(seconds=self.lease_seconds), "updated_at": now}},
+                    upsert=True,
+                    return_document=True,
+                )
+                if result and result.get("owner") == self.owner:
+                    return self
+            except Exception as exc:
+                if exc.__class__.__name__ != "DuplicateKeyError":
+                    raise
+            await asyncio.sleep(0.05)
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await db.matching_locks.delete_one({"key": f"pair:{self.pair}", "owner": self.owner})
 
 
 matching_engine = MatchingEngine()
