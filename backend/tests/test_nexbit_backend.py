@@ -322,3 +322,9 @@ def test_real_spot_order_requires_funded_accounts():
     )
     assert buyer_order.status_code == 200, buyer_order.text
     assert buyer_order.json()["order"]["status"] == "filled"
+
+
+def test_decimal128_wallet_ledger_roundtrip():
+    from bson.decimal128 import Decimal128
+    value = Decimal128("123.4500000000000001")
+    assert value.to_decimal().to_eng_string() == "123.4500000000000001"
