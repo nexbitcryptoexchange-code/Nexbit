@@ -1,5 +1,5 @@
 """Pydantic request/response models."""
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from typing import Optional, List, Literal
 from datetime import datetime
 
@@ -126,14 +126,25 @@ class AdminBalanceAdjustmentIn(BaseModel):
 
 
 class MarketPairIn(BaseModel):
-    symbol: str
-    base: str
-    quote: str
+    symbol: str = Field(min_length=5, max_length=30)
+    base: str = Field(min_length=2, max_length=15)
+    quote: str = Field(min_length=2, max_length=15)
     min_qty: float = 0.0001
     tick: float = 0.01
     maker_fee: float = 0.001
     taker_fee: float = 0.001
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_pair(self):
+        self.symbol = self.symbol.strip().upper()
+        self.base = self.base.strip().upper()
+        self.quote = self.quote.strip().upper()
+        if self.symbol != f"{self.base}/{self.quote}":
+            raise ValueError("symbol must match base/quote")
+        if self.base == self.quote:
+            raise ValueError("base and quote assets must differ")
+        return self
 
 
 class FeeConfigIn(BaseModel):
