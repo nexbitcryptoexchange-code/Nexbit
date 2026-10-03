@@ -79,7 +79,7 @@ class MatchingEngine:
 
             for maker in candidates:
                 maker_remaining = max(
-                    0.0,
+                    Decimal("0"),
                     to_decimal(maker.get("quantity", 0)) - to_decimal(maker.get("filled_qty", 0)),
                 )
                 if maker_remaining <= 0:
@@ -106,7 +106,7 @@ class MatchingEngine:
                     required_quote = to_decimal(data.quantity)
 
             if data.type == "market" and data.side == "sell":
-                required_quote = 0.0
+                required_quote = Decimal("0")
 
             order_id = _new_id()
             created = _iso(_now())
@@ -136,8 +136,8 @@ class MatchingEngine:
                         await self._move(user["id"], quote, "spot", -required_quote, session, order_id, "trade.order.reserve")
                         await self._move(user["id"], quote, "locked", required_quote, session, order_id, "trade.order.reserve")
                     else:
-                        await self._move(user["id"], base, "spot", -float(data.quantity), session, order_id, "trade.order.reserve")
-                        await self._move(user["id"], base, "locked", float(data.quantity), session, order_id, "trade.order.reserve")
+                        await self._move(user["id"], base, "spot", -to_decimal(data.quantity), session, order_id, "trade.order.reserve")
+                        await self._move(user["id"], base, "locked", to_decimal(data.quantity), session, order_id, "trade.order.reserve")
                     filled = Decimal("0")
                     for maker, qty, trade_price, notional, buyer_fee in plan:
                         maker_id = maker["id"]
@@ -184,9 +184,9 @@ class MatchingEngine:
                                     reference_id=maker_id, reason="trade.maker_fee_release",
                                 )
                         if data.side == "buy" and data.type == "limit":
-                            reserved_fill = notional * (1.0 + taker_fee)
+                            reserved_fill = notional * (Decimal("1") + taker_fee)
                             actual_fill = notional + incoming_buyer_fee
-                            release = max(0.0, reserved_fill - actual_fill)
+                            release = max(Decimal("0"), reserved_fill - actual_fill)
                             if release > 0:
                                 await self._move(
                                     user_id=buyer_id, asset=quote, bucket="locked",
@@ -234,11 +234,11 @@ class MatchingEngine:
                             "order_id": order_id,
                             "maker_order_id": maker_id,
                             "pair": pair,
-                            "price": trade_price,
-                            "quantity": qty,
-                            "quote_amount": notional,
-                            "buyer_fee": incoming_buyer_fee,
-                            "seller_fee": seller_fee,
+                            "price": to_decimal128(trade_price),
+                            "quantity": to_decimal128(qty),
+                            "quote_amount": to_decimal128(notional),
+                            "buyer_fee": to_decimal128(incoming_buyer_fee),
+                            "seller_fee": to_decimal128(seller_fee),
                             "taker_user_id": user["id"],
                             "maker_user_id": maker_user,
                             "side": data.side,
@@ -262,11 +262,11 @@ class MatchingEngine:
 
                     if filled > 0:
                         order["filled_qty"] = filled
-                        order["remaining_qty"] = max(0.0, to_decimal(data.quantity) - filled)
+                        order["remaining_qty"] = max(Decimal("0"), to_decimal(data.quantity) - filled)
 
                     if data.type == "market":
                         order["status"] = "filled" if order["remaining_qty"] <= Decimal("0.000000000001") else "cancelled"
-                    elif order["remaining_qty"] <= 1e-12:
+                    elif order["remaining_qty"] <= Decimal("0.000000000001"):
                         order["status"] = "filled"
                     else:
                         order["status"] = "open" if filled == 0 else "partial"
