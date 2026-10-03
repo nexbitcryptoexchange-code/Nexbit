@@ -51,6 +51,22 @@ def _login_admin():
     return data["access_token"]
 
 
+def test_financial_models_reject_non_finite_values():
+    from pydantic import ValidationError
+    from models import AdminBalanceAdjustmentIn, OrderIn, WithdrawIn
+
+    for factory in (
+        lambda: OrderIn(pair="BTC/USDT", side="buy", type="limit", quantity=float("nan"), price=1),
+        lambda: WithdrawIn(asset="BTC", amount=float("inf"), address="bc1example", network="BTC"),
+        lambda: AdminBalanceAdjustmentIn(user_id="u", asset="USDT", amount=float("nan"), action="credit"),
+    ):
+        try:
+            factory()
+        except ValidationError:
+            continue
+        raise AssertionError("non-finite financial input was accepted")
+
+
 def test_health():
     response = requests.get(f"{API}/health", timeout=15)
     assert response.status_code == 200
