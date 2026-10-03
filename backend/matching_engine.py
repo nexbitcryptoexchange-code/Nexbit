@@ -8,10 +8,12 @@ import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import HTTPException
 
 from db import db, client
+from financial import to_decimal, to_decimal128
 
 
 def _now() -> datetime:
@@ -51,7 +53,7 @@ class MatchingEngine:
             market = await db.market_pairs.find_one({"symbol": pair, "enabled": True}, {"_id": 0})
             if not market:
                 raise HTTPException(404, "Market is disabled or does not exist")
-            if data.quantity < float(market.get("min_qty", 0)):
+            if to_decimal(data.quantity) < to_decimal(market.get("min_qty", 0)):
                 raise HTTPException(400, "Quantity is below market minimum")
             if data.quantity <= 0:
                 raise HTTPException(400, "Quantity must be positive")
@@ -65,25 +67,25 @@ class MatchingEngine:
             elif data.price is not None and data.price <= 0:
                 raise HTTPException(400, "Price must be positive")
 
-            maker_fee = float(market.get("maker_fee", 0.001))
-            taker_fee = float(market.get("taker_fee", 0.001))
+            maker_fee = to_decimal(market.get("maker_fee", "0.001"))
+            taker_fee = to_decimal(market.get("taker_fee", "0.001"))
             if maker_fee < 0 or taker_fee < 0:
                 raise HTTPException(500, "Invalid market fee configuration")
 
             candidates = await self._candidates(pair, data.side, data.type, data.price)
             plan = []
-            remaining = float(data.quantity)
-            required_quote = 0.0
+            remaining = to_decimal(data.quantity)
+            required_quote = Decimal("0")
 
             for maker in candidates:
                 maker_remaining = max(
                     0.0,
-                    float(maker.get("quantity", 0)) - float(maker.get("filled_qty", 0)),
+                    to_decimal(maker.get("quantity", 0)) - to_decimal(maker.get("filled_qty", 0)),
                 )
                 if maker_remaining <= 0:
                     continue
                 fill_qty = min(remaining, maker_remaining)
-                trade_price = float(maker["price"])
+                trade_price = to_decimal(maker["price"])
                 notional = fill_qty * trade_price
                 buyer_fee = notional * taker_fee if data.side == "buy" else notional * maker_fee
                 if data.side == "buy":
@@ -93,15 +95,15 @@ class MatchingEngine:
                 if remaining <= 1e-12:
                     break
 
-            if data.type == "market" and remaining > 1e-12:
+            if data.type == "market" and remaining > Decimal("0.000000000001"):
                 raise HTTPException(400, "Insufficient liquidity in NEXBIT order book")
 
             if data.type == "limit":
-                reserve_price = float(data.price)
+                reserve_price = to_decimal(data.price)
                 if data.side == "buy":
-                    required_quote = float(data.quantity) * reserve_price * (1.0 + taker_fee)
+                    required_quote = to_decimal(data.quantity) * reserve_price * (Decimal("1") + taker_fee)
                 else:
-                    required_quote = float(data.quantity)
+                    required_quote = to_decimal(data.quantity)
 
             if data.type == "market" and data.side == "sell":
                 required_quote = 0.0
@@ -117,11 +119,11 @@ class MatchingEngine:
                 "quote": quote,
                 "side": data.side,
                 "type": data.type,
-                "quantity": float(data.quantity),
-                "price": float(data.price) if data.price is not None else None,
+                "quantity": to_decimal128(data.quantity),
+                "price": to_decimal128(data.price) if data.price is not None else None,
                 "stop_price": None,
-                "filled_qty": 0.0,
-                "remaining_qty": float(data.quantity),
+                "filled_qty": to_decimal128("0"),
+                "remaining_qty": to_decimal128(data.quantity),
                 "status": "open",
                 "created_at": created,
                 "updated_at": created,
@@ -136,7 +138,7 @@ class MatchingEngine:
                     else:
                         await self._move(user["id"], base, "spot", -float(data.quantity), session, order_id, "trade.order.reserve")
                         await self._move(user["id"], base, "locked", float(data.quantity), session, order_id, "trade.order.reserve")
-                    filled = 0.0
+                    filled = Decimal("0")
                     for maker, qty, trade_price, notional, buyer_fee in plan:
                         maker_id = maker["id"]
                         maker_user = maker["user_id"]
@@ -167,10 +169,10 @@ class MatchingEngine:
                         # When a resting buy acts as maker, release the reserved
                         # fee spread immediately so locked funds cannot accumulate.
                         if data.side == "sell" and data.type in {"limit", "market"}:
-                            reserved_fill = notional * (1.0 + taker_fee)
+                            reserved_fill = notional * (Decimal("1") + taker_fee)
                             actual_fill = notional + incoming_buyer_fee
-                            release = max(0.0, reserved_fill - actual_fill)
-                            if release > 0:
+                            release = max(Decimal("0"), reserved_fill - actual_fill)
+                            if release > Decimal("0"):
                                 await self._move(
                                     user_id=buyer_id, asset=quote, bucket="locked",
                                     delta=-release, session=session,
@@ -243,14 +245,14 @@ class MatchingEngine:
                             "created_at": _iso(_now()),
                         }, session=session)
 
-                        maker_new_filled = float(maker.get("filled_qty", 0)) + qty
-                        maker_total = float(maker["quantity"])
-                        maker_status = "filled" if maker_new_filled >= maker_total - 1e-12 else "partial"
+                        maker_new_filled = to_decimal(maker.get("filled_qty", 0)) + qty
+                        maker_total = to_decimal(maker["quantity"])
+                        maker_status = "filled" if maker_new_filled >= maker_total - Decimal("0.000000000001") else "partial"
                         await db.orders.update_one(
                             {"id": maker_id, "status": {"$in": ["open", "partial"]}},
                             {"$set": {
                                 "filled_qty": maker_new_filled,
-                                "remaining_qty": max(0.0, maker_total - maker_new_filled),
+                                "remaining_qty": max(Decimal("0"), maker_total - maker_new_filled),
                                 "status": maker_status,
                                 "updated_at": _iso(_now()),
                             }},
@@ -260,10 +262,10 @@ class MatchingEngine:
 
                     if filled > 0:
                         order["filled_qty"] = filled
-                        order["remaining_qty"] = max(0.0, float(data.quantity) - filled)
+                        order["remaining_qty"] = max(0.0, to_decimal(data.quantity) - filled)
 
                     if data.type == "market":
-                        order["status"] = "filled" if order["remaining_qty"] <= 1e-12 else "cancelled"
+                        order["status"] = "filled" if order["remaining_qty"] <= Decimal("0.000000000001") else "cancelled"
                     elif order["remaining_qty"] <= 1e-12:
                         order["status"] = "filled"
                     else:
@@ -292,15 +294,15 @@ class MatchingEngine:
             if not order or order.get("status") not in {"open", "partial"}:
                 raise HTTPException(400, "Order not open")
             base, quote = self._parse_pair(pair)
-            remaining = float(order.get("remaining_qty") or 0.0)
+            remaining = to_decimal(order.get("remaining_qty") or 0)
             if remaining <= 0:
                 raise HTTPException(400, "Order has no remaining quantity")
             async with await client.start_session() as session:
                 async with session.start_transaction():
                     if order["side"] == "buy":
                         market = await db.market_pairs.find_one({"symbol": pair}, {"_id": 0, "taker_fee": 1}, session=session)
-                        fee = float((market or {}).get("taker_fee", 0.001))
-                        release = remaining * float(order["price"]) * (1.0 + fee)
+                        fee = to_decimal((market or {}).get("taker_fee", "0.001"))
+                        release = remaining * to_decimal(order["price"]) * (Decimal("1") + fee)
                         await self._move(user["id"], quote, "locked", -release, session, order_id, "trade.order.cancel")
                         await self._move(user["id"], quote, "spot", release, session, order_id, "trade.order.cancel")
                     else:
@@ -327,18 +329,19 @@ class MatchingEngine:
         if order_type != "limit":
             return rows
         if side == "buy":
-            return [r for r in rows if float(r["price"]) <= float(price)]
-        return [r for r in rows if float(r["price"]) >= float(price)]
+            return [r for r in rows if to_decimal(r["price"]) <= to_decimal(price)]
+        return [r for r in rows if to_decimal(r["price"]) >= to_decimal(price)]
 
     async def _move(self, user_id, asset, bucket, delta, session, reference_id, reason):
+        delta = to_decimal(delta)
         if delta == 0:
             return
         query = {"user_id": user_id, "asset": asset}
         if delta < 0:
-            query[bucket] = {"$gte": abs(delta)}
+            query[bucket] = {"$gte": to_decimal128(-delta)}
         result = await db.wallets.update_one(
             query,
-            {"$inc": {bucket: delta}, "$set": {"updated_at": _iso(_now())}},
+            {"$inc": {bucket: to_decimal128(delta)}, "$set": {"updated_at": _iso(_now())}},
             session=session,
         )
         if result.matched_count != 1:
@@ -349,8 +352,8 @@ class MatchingEngine:
             "user_id": user_id,
             "asset": asset,
             "bucket": bucket,
-            "delta": delta,
-            "balance_after": float(wallet.get(bucket) or 0),
+            "delta": to_decimal128(delta),
+            "balance_after": wallet.get(bucket) or to_decimal128("0"),
             "reason": reason,
             "reference_id": reference_id,
             "created_at": _iso(_now()),
