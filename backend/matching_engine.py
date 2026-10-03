@@ -49,7 +49,7 @@ class MatchingEngine:
         base, quote = self._parse_pair(pair)
         lock = self._lock(pair)
 
-        async with lock:
+        async with lock, _DistributedPairLock(pair):
             market = await db.market_pairs.find_one({"symbol": pair, "enabled": True}, {"_id": 0})
             if not market:
                 raise HTTPException(404, "Market is disabled or does not exist")
