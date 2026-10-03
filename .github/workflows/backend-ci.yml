@@ -62,4 +62,15 @@ jobs:
           exit 1
 
       - name: Run backend integration tests
-        run: python -m pytest backend/tests/test_nexbit_backend.py -q --disable-warnings --maxfail=1
+        run: |
+          set -o pipefail
+          python -m pytest backend/tests/test_nexbit_backend.py -q --disable-warnings --maxfail=1
+        env:
+          NEXBIT_TEST_BASE_URL: http://127.0.0.1:8000
+
+      - name: Dump API log on failure
+        if: failure()
+        run: |
+          echo "===== NEXBIT API LOG ====="
+          cat /tmp/nexbit-api.log || true
+          echo "===== END NEXBIT API LOG ====="
