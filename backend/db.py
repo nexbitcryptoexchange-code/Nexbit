@@ -28,6 +28,11 @@ async def ensure_indexes() -> None:
     await db.ledger_entries.create_index([("user_id", 1), ("created_at", -1)])
     await db.ledger_entries.create_index("reference_id", sparse=True)
     await db.audit_logs.create_index([("created_at", -1)])
+    await db.wallet_addresses.create_index([("user_id", 1), ("asset", 1), ("network", 1)], unique=True)
+    await db.wallet_addresses.create_index("address", unique=True)
+    await db.blockchain_events.create_index([("provider", 1), ("event_id", 1)], unique=True)
+    await db.blockchain_events.create_index([("user_id", 1), ("created_at", -1)])
+    await db.payout_events.create_index([("provider", 1), ("event_id", 1), ("status", 1)], unique=True)
     await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
 
 
