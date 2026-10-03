@@ -25,6 +25,8 @@ async def ensure_indexes() -> None:
     await db.trades.create_index([("pair", 1), ("created_at", -1)])
     await db.kyc.create_index("user_id", unique=True)
     await db.wallets.create_index([("user_id", 1), ("asset", 1)], unique=True)
+    await db.ledger_entries.create_index([("user_id", 1), ("created_at", -1)])
+    await db.ledger_entries.create_index("reference_id", unique=True, sparse=True)
     await db.audit_logs.create_index([("created_at", -1)])
     await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
 
