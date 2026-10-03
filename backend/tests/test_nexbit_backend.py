@@ -230,7 +230,7 @@ def test_admin_dashboard_only_counts_last_24_hours():
     admin_token = _login_admin()
     from datetime import datetime, timedelta, timezone
     from bson.decimal128 import Decimal128
-    from db import db
+    from pymongo import MongoClient
 
     baseline = requests.get(
         f"{API}/admin/dashboard",
@@ -243,7 +243,7 @@ def test_admin_dashboard_only_counts_last_24_hours():
     fresh_id = f"e2e-{uuid.uuid4().hex}"
     old_id = f"e2e-{uuid.uuid4().hex}"
     now = datetime.now(timezone.utc)
-    awaitable_rows = [
+    rows = [
         {
             "id": old_id, "pair": "NEXBIT/USDT", "price": Decimal128("100"),
             "quantity": Decimal128("9"), "created_at": (now - timedelta(days=2)).isoformat(),
@@ -253,10 +253,8 @@ def test_admin_dashboard_only_counts_last_24_hours():
             "quantity": Decimal128("3"), "created_at": now.isoformat(),
         },
     ]
-    import asyncio
-    async def seed_rows():
-        await db.trades.insert_many(awaitable_rows)
-    asyncio.run(seed_rows())
+    with MongoClient(os.environ["MONGO_URL"]) as client:
+        client[os.environ["DB_NAME"]].trades.insert_many(rows)
 
     try:
         response = requests.get(
@@ -269,9 +267,8 @@ def test_admin_dashboard_only_counts_last_24_hours():
         assert stats["trades_count"] == baseline_stats["trades_count"] + 1
         assert float(stats["trading_volume_24h"]) == float(baseline_stats["trading_volume_24h"]) + 21.0
     finally:
-        async def cleanup_rows():
-            await db.trades.delete_many({"id": {"$in": [old_id, fresh_id]}})
-        asyncio.run(cleanup_rows())
+        with MongoClient(os.environ["MONGO_URL"]) as client:
+            client[os.environ["DB_NAME"]].trades.delete_many({"id": {"$in": [old_id, fresh_id]}})
 
 
 def test_non_admin_cannot_read_admin_endpoints():
