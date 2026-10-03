@@ -196,6 +196,28 @@ def test_admin_ledger_credit_is_idempotent_and_debitable():
     assert float(usdt["spot"]) == 0.0
 
 
+def test_non_admin_cannot_read_admin_endpoints():
+    token, _ = _register()
+    headers = _headers(token)
+    for path in [
+        "/admin/dashboard",
+        "/admin/users",
+        "/admin/kyc",
+        "/admin/transactions",
+        "/admin/orders",
+        "/admin/positions",
+        "/admin/wallets",
+        "/admin/pairs",
+        "/admin/fees",
+        "/admin/fees/treasury",
+        "/admin/audit",
+        "/admin/support",
+        "/admin/reports/overview",
+    ]:
+        response = requests.get(f"{API}{path}", headers=headers, timeout=15)
+        assert response.status_code == 403, f"{path}: {response.status_code} {response.text}"
+
+
 def test_non_admin_cannot_adjust_balances():
     token, _ = _register()
     response = requests.post(
