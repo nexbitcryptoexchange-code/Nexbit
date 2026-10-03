@@ -863,7 +863,7 @@ async def blockbee_deposit_webhook(request: Request):
                 {"user_id": user_id, "asset": asset},
                 {"$setOnInsert": {
                     "id": _new_id(), "user_id": user_id, "asset": asset,
-                    "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+                    "spot": to_decimal128("0"), "futures": to_decimal128("0"), "earn": to_decimal128("0"), "locked": to_decimal128("0"),
                     "updated_at": now,
                 }},
                 upsert=True,
