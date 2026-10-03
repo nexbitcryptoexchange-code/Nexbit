@@ -13,6 +13,13 @@ from typing import Optional, List
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
+PRODUCTION_MODE = os.environ.get("NEXBIT_PRODUCTION", "false").lower() == "true"
+
+if PRODUCTION_MODE:
+    jwt_secret = os.environ.get("JWT_SECRET", "")
+    if len(jwt_secret) < 32 or jwt_secret.lower().startswith("change-me"):
+        raise RuntimeError("JWT_SECRET must be a strong secret (32+ chars) when NEXBIT_PRODUCTION=true")
+
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
@@ -111,7 +118,7 @@ async def register(data: RegisterIn, response: Response):
     await db.users.insert_one(doc)
     # Seed empty wallets for key assets
     for asset in ["USDT", "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "ADA"]:
-        starting = 5000.0 if asset == "USDT" else 0.0
+        starting = 0.0
         await db.wallets.insert_one({
             "id": _new_id(), "user_id": uid, "asset": asset,
             "spot": starting, "futures": 0.0, "earn": 0.0, "locked": 0.0,
@@ -209,8 +216,8 @@ async def forgot(data: ForgotIn):
             await send_password_reset(to=email, name=u.get("name") or email, token=token)
         except Exception as e:
             logger.warning("reset email send skipped: %s", e)
-    # Always success (don't leak whether email exists); dev token kept for easy testing
-    return {"ok": True, "dev_token": token if u else None}
+    # Always return the same response shape without exposing reset tokens.
+    return {"ok": True}
 
 
 @auth.post("/reset-password")
@@ -230,8 +237,7 @@ async def verify_email(data: VerifyEmailIn, user: dict = Depends(get_current_use
     u = await db.users.find_one({"id": user["id"]})
     if not u:
         raise HTTPException(404, "User not found")
-    # Accept the stored code, or master demo code 123456
-    if data.code != u.get("verify_code") and data.code != "123456":
+    if data.code != u.get("verify_code"):
         raise HTTPException(400, "Invalid code")
     await db.users.update_one({"id": user["id"]}, {"$set": {"email_verified": True}})
     return {"ok": True}
@@ -466,6 +472,8 @@ async def transactions(user: dict = Depends(get_current_user), limit: int = 100)
 
 @wallet_r.post("/deposit")
 async def deposit(data: DepositIn, user: dict = Depends(get_current_user)):
+    if PRODUCTION_MODE:
+        raise HTTPException(503, "On-chain deposit integration is not configured")
     asset = data.asset.upper()
     tx = {
         "id": _new_id(), "user_id": user["id"], "type": "deposit",
@@ -1028,7 +1036,7 @@ app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1038,10 +1046,10 @@ app.add_middleware(
 # SEED
 # ============================================================================
 async def _seed() -> None:
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@nexbit.com")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@12345")
-    existing = await db.users.find_one({"email": admin_email})
-    if not existing:
+    admin_email = os.environ.get("ADMIN_EMAIL")
+    admin_password = os.environ.get("ADMIN_PASSWORD")
+    existing = await db.users.find_one({"email": admin_email}) if admin_email else None
+    if not existing and admin_email and admin_password:
         uid = _new_id()
         await db.users.insert_one({
             "id": uid, "email": admin_email, "name": "NEXBIT Admin",
@@ -1055,10 +1063,12 @@ async def _seed() -> None:
                 "spot": 10000.0 if asset == "USDT" else 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
                 "updated_at": _iso(_now()),
             })
-    elif not verify_password(admin_password, existing.get("password_hash", "")):
+    elif existing and admin_password and not verify_password(admin_password, existing.get("password_hash", "")):
         await db.users.update_one({"id": existing["id"]}, {"$set": {"password_hash": hash_password(admin_password), "role": "admin"}})
 
-    # Demo user
+    # Demo user is strictly disabled in production.
+    if PRODUCTION_MODE:
+        return
     demo_email = os.environ.get("DEMO_USER_EMAIL", "demo@nexbit.com")
     demo_password = os.environ.get("DEMO_USER_PASSWORD", "Demo@12345")
     demo = await db.users.find_one({"email": demo_email})
