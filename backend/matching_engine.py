@@ -137,123 +137,123 @@ class MatchingEngine:
                         await self._move(user["id"], base, "spot", -float(data.quantity), session, order_id, "trade.order.reserve")
                         await self._move(user["id"], base, "locked", float(data.quantity), session, order_id, "trade.order.reserve")
                     filled = 0.0
-                        for maker, qty, trade_price, notional, buyer_fee in plan:
-                            maker_id = maker["id"]
-                            maker_user = maker["user_id"]
-                            # The resting order is always maker; the incoming order
-                            # is always taker. The fee asset is quote.
-                            if data.side == "buy":
-                                incoming_buyer_fee = notional * taker_fee
-                                resting_fee = notional * maker_fee
-                            else:
-                                incoming_buyer_fee = notional * maker_fee
-                                resting_fee = notional * taker_fee
-
-                            buyer_id = user["id"] if data.side == "buy" else maker_user
-                            seller_id = maker_user if data.side == "buy" else user["id"]
-
-                            await self._move(
-                                user_id=buyer_id, asset=quote, bucket="locked",
-                                delta=-(notional + incoming_buyer_fee),
-                                session=session, reference_id=maker_id,
-                                reason="trade.fill",
-                            )
-                            await self._move(
-                                user_id=buyer_id, asset=base, bucket="spot",
-                                delta=qty, session=session, reference_id=maker_id,
-                                reason="trade.fill",
-                            )
-                            if data.side == "buy" and data.type == "limit":
-                                reserved_fill = notional * (1.0 + taker_fee)
-                                actual_fill = notional + incoming_buyer_fee
-                                release = max(0.0, reserved_fill - actual_fill)
-                                if release > 0:
-                                    await self._move(
-                                        user_id=buyer_id, asset=quote, bucket="locked",
-                                        delta=-release, session=session,
-                                        reference_id=order_id, reason="trade.price_improvement",
-                                    )
-                                    await self._move(
-                                        user_id=buyer_id, asset=quote, bucket="spot",
-                                        delta=release, session=session,
-                                        reference_id=order_id, reason="trade.price_improvement",
-                                    )
-                            await self._move(
-                                user_id=seller_id, asset=base, bucket="locked",
-                                delta=-qty, session=session, reference_id=order_id,
-                                reason="trade.fill",
-                            )
-                            seller_fee = resting_fee
-                            await self._move(
-                                user_id=seller_id, asset=quote, bucket="spot",
-                                delta=notional - seller_fee, session=session,
-                                reference_id=order_id, reason="trade.fill",
-                            )
-
-                            total_fee = incoming_buyer_fee + seller_fee
-                            treasury = os.environ.get("NEXBIT_FEE_TREASURY_USER_ID", "").strip()
-                            if not treasury:
-                                raise HTTPException(503, "Fee treasury is not configured")
-                            if total_fee > 0:
-                                await self._move(
-                                    user_id=treasury, asset=quote, bucket="spot",
-                                    delta=total_fee, session=session,
-                                    reference_id=f"fee:{order_id}:{maker_id}",
-                                    reason="trade.fee",
-                                )
-
-                            await db.trades.insert_one({
-                                "id": _new_id(),
-                                "order_id": order_id,
-                                "maker_order_id": maker_id,
-                                "pair": pair,
-                                "price": trade_price,
-                                "quantity": qty,
-                                "quote_amount": notional,
-                                "buyer_fee": incoming_buyer_fee,
-                                "seller_fee": seller_fee,
-                                "taker_user_id": user["id"],
-                                "maker_user_id": maker_user,
-                                "side": data.side,
-                                "created_at": _iso(_now()),
-                            }, session=session)
-
-                            maker_new_filled = float(maker.get("filled_qty", 0)) + qty
-                            maker_total = float(maker["quantity"])
-                            maker_status = "filled" if maker_new_filled >= maker_total - 1e-12 else "partial"
-                            await db.orders.update_one(
-                                {"id": maker_id, "status": {"$in": ["open", "partial"]}},
-                                {"$set": {
-                                    "filled_qty": maker_new_filled,
-                                    "remaining_qty": max(0.0, maker_total - maker_new_filled),
-                                    "status": maker_status,
-                                    "updated_at": _iso(_now()),
-                                }},
-                                session=session,
-                            )
-                            filled += qty
-
-                        if filled > 0:
-                            order["filled_qty"] = filled
-                            order["remaining_qty"] = max(0.0, float(data.quantity) - filled)
-
-                        if data.type == "market":
-                            order["status"] = "filled" if order["remaining_qty"] <= 1e-12 else "cancelled"
-                        elif order["remaining_qty"] <= 1e-12:
-                            order["status"] = "filled"
+                    for maker, qty, trade_price, notional, buyer_fee in plan:
+                        maker_id = maker["id"]
+                        maker_user = maker["user_id"]
+                        # The resting order is always maker; the incoming order
+                        # is always taker. The fee asset is quote.
+                        if data.side == "buy":
+                            incoming_buyer_fee = notional * taker_fee
+                            resting_fee = notional * maker_fee
                         else:
-                            order["status"] = "open" if filled == 0 else "partial"
+                            incoming_buyer_fee = notional * maker_fee
+                            resting_fee = notional * taker_fee
 
+                        buyer_id = user["id"] if data.side == "buy" else maker_user
+                        seller_id = maker_user if data.side == "buy" else user["id"]
+
+                        await self._move(
+                            user_id=buyer_id, asset=quote, bucket="locked",
+                            delta=-(notional + incoming_buyer_fee),
+                            session=session, reference_id=maker_id,
+                            reason="trade.fill",
+                        )
+                        await self._move(
+                            user_id=buyer_id, asset=base, bucket="spot",
+                            delta=qty, session=session, reference_id=maker_id,
+                            reason="trade.fill",
+                        )
+                        if data.side == "buy" and data.type == "limit":
+                            reserved_fill = notional * (1.0 + taker_fee)
+                            actual_fill = notional + incoming_buyer_fee
+                            release = max(0.0, reserved_fill - actual_fill)
+                            if release > 0:
+                                await self._move(
+                                    user_id=buyer_id, asset=quote, bucket="locked",
+                                    delta=-release, session=session,
+                                    reference_id=order_id, reason="trade.price_improvement",
+                                )
+                                await self._move(
+                                    user_id=buyer_id, asset=quote, bucket="spot",
+                                    delta=release, session=session,
+                                    reference_id=order_id, reason="trade.price_improvement",
+                                )
+                        await self._move(
+                            user_id=seller_id, asset=base, bucket="locked",
+                            delta=-qty, session=session, reference_id=order_id,
+                            reason="trade.fill",
+                        )
+                        seller_fee = resting_fee
+                        await self._move(
+                            user_id=seller_id, asset=quote, bucket="spot",
+                            delta=notional - seller_fee, session=session,
+                            reference_id=order_id, reason="trade.fill",
+                        )
+
+                        total_fee = incoming_buyer_fee + seller_fee
+                        treasury = os.environ.get("NEXBIT_FEE_TREASURY_USER_ID", "").strip()
+                        if not treasury:
+                            raise HTTPException(503, "Fee treasury is not configured")
+                        if total_fee > 0:
+                            await self._move(
+                                user_id=treasury, asset=quote, bucket="spot",
+                                delta=total_fee, session=session,
+                                reference_id=f"fee:{order_id}:{maker_id}",
+                                reason="trade.fee",
+                            )
+
+                        await db.trades.insert_one({
+                            "id": _new_id(),
+                            "order_id": order_id,
+                            "maker_order_id": maker_id,
+                            "pair": pair,
+                            "price": trade_price,
+                            "quantity": qty,
+                            "quote_amount": notional,
+                            "buyer_fee": incoming_buyer_fee,
+                            "seller_fee": seller_fee,
+                            "taker_user_id": user["id"],
+                            "maker_user_id": maker_user,
+                            "side": data.side,
+                            "created_at": _iso(_now()),
+                        }, session=session)
+
+                        maker_new_filled = float(maker.get("filled_qty", 0)) + qty
+                        maker_total = float(maker["quantity"])
+                        maker_status = "filled" if maker_new_filled >= maker_total - 1e-12 else "partial"
                         await db.orders.update_one(
-                            {"id": order_id},
+                            {"id": maker_id, "status": {"$in": ["open", "partial"]}},
                             {"$set": {
-                                "filled_qty": order["filled_qty"],
-                                "remaining_qty": order["remaining_qty"],
-                                "status": order["status"],
+                                "filled_qty": maker_new_filled,
+                                "remaining_qty": max(0.0, maker_total - maker_new_filled),
+                                "status": maker_status,
                                 "updated_at": _iso(_now()),
                             }},
                             session=session,
                         )
+                        filled += qty
+
+                    if filled > 0:
+                        order["filled_qty"] = filled
+                        order["remaining_qty"] = max(0.0, float(data.quantity) - filled)
+
+                    if data.type == "market":
+                        order["status"] = "filled" if order["remaining_qty"] <= 1e-12 else "cancelled"
+                    elif order["remaining_qty"] <= 1e-12:
+                        order["status"] = "filled"
+                    else:
+                        order["status"] = "open" if filled == 0 else "partial"
+
+                    await db.orders.update_one(
+                        {"id": order_id},
+                        {"$set": {
+                            "filled_qty": order["filled_qty"],
+                            "remaining_qty": order["remaining_qty"],
+                            "status": order["status"],
+                            "updated_at": _iso(_now()),
+                        }},
+                        session=session,
+                    )
 
             return await db.orders.find_one({"id": order_id}, {"_id": 0})
 
