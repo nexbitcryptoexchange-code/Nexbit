@@ -116,6 +116,15 @@ class AdminTxDecisionIn(BaseModel):
     note: Optional[str] = None
 
 
+class AdminBalanceAdjustmentIn(BaseModel):
+    user_id: str
+    asset: str
+    amount: float = Field(gt=0)
+    action: Literal["credit", "debit"]
+    note: Optional[str] = None
+    reference_id: Optional[str] = Field(default=None, min_length=8, max_length=100)
+
+
 class MarketPairIn(BaseModel):
     symbol: str
     base: str
