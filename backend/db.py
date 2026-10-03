@@ -35,6 +35,7 @@ async def ensure_indexes() -> None:
     await db.blockchain_events.create_index([("provider", 1), ("event_id", 1)], unique=True)
     await db.blockchain_events.create_index([("user_id", 1), ("created_at", -1)])
     await db.payout_events.create_index([("provider", 1), ("event_id", 1), ("status", 1)], unique=True)
+    await db.transactions.create_index([("type", 1), ("payout_id", 1)], unique=True, sparse=True)
     await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
 
 
