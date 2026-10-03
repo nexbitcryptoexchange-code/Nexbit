@@ -576,7 +576,7 @@ async def _adjust(
     uid: str,
     asset: str,
     bucket: str,
-    delta: float,
+    delta: Decimal,
     *,
     reason: str = "balance.adjust",
     reference_id: Optional[str] = None,
@@ -1063,7 +1063,7 @@ async def open_position(data: FuturesOrderIn, user: dict = Depends(get_current_u
         "side": data.side, "leverage": data.leverage,
         "quantity": data.quantity, "entry_price": entry,
         "margin": margin, "liq_price": liq, "tp": data.tp, "sl": data.sl,
-        "status": "open", "pnl": 0.0,
+        "status": "open", "pnl": to_decimal128("0"),
         "created_at": _iso(_now()),
     }
     await db.positions.insert_one(pos)
@@ -1086,7 +1086,7 @@ async def close_position(data: ClosePositionIn, user: dict = Depends(get_current
     pnl = (mark - p["entry_price"]) * p["quantity"] * (1 if p["side"] == "long" else -1)
     # return margin + pnl to spot USDT
     await _adjust(user["id"], "USDT", "futures", -p["margin"])
-    return_amt = max(0.0, p["margin"] + pnl)
+    return_amt = max(Decimal("0"), to_decimal(p["margin"]) + pnl)
     await _adjust(user["id"], "USDT", "spot", return_amt)
     await db.positions.update_one({"id": p["id"]}, {"$set": {"status": "closed", "pnl": pnl, "exit_price": mark, "closed_at": _iso(_now())}})
     return {"ok": True, "pnl": pnl, "exit_price": mark}
@@ -1114,19 +1114,19 @@ async def fut_account(user: dict = Depends(get_current_user)):
     rows = await db.positions.find({"user_id": user["id"], "status": "open"}, {"_id": 0}).to_list(100)
     wallet = await _get_wallet(user["id"], "USDT")
     prices = await get_prices()
-    unrealized = 0.0
-    used_margin = 0.0
+    unrealized = Decimal("0")
+    used_margin = Decimal("0")
     for r in rows:
         base, _q = _parse_pair(r["pair"])
         mark = (prices.get(base) or {}).get("price", r["entry_price"])
         unrealized += (mark - r["entry_price"]) * r["quantity"] * (1 if r["side"] == "long" else -1)
         used_margin += r["margin"]
-    balance = wallet.get("futures", 0.0)
+    balance = to_decimal(wallet.get("futures", 0))
     equity = balance + unrealized
-    risk_ratio = (used_margin / equity * 100) if equity > 0 else 0.0
+    risk_ratio = (used_margin / equity * Decimal("100")) if equity > 0 else Decimal("0")
     return {
-        "balance": balance, "equity": equity, "unrealized_pnl": unrealized,
-        "used_margin": used_margin, "risk_ratio": min(100.0, risk_ratio),
+        "balance": float(balance), "equity": float(equity), "unrealized_pnl": float(unrealized),
+        "used_margin": float(used_margin), "risk_ratio": min(100.0, float(risk_ratio)),
         "open_positions": len(rows),
     }
 
@@ -1164,8 +1164,8 @@ async def earn_subscribe(data: EarnSubscribeIn, user: dict = Depends(get_current
     await _adjust(user["id"], p["asset"], "earn", data.amount)
     sub = {
         "id": _new_id(), "user_id": user["id"], "product_id": p["id"],
-        "asset": p["asset"], "amount": data.amount, "apy": p["apy"],
-        "type": p["type"], "status": "active", "earned": 0.0,
+        "asset": p["asset"], "amount": to_decimal128(data.amount), "apy": to_decimal128(p["apy"]),
+        "type": p["type"], "status": "active", "earned": to_decimal128("0"),
         "created_at": _iso(_now()),
     }
     await db.earn_subs.insert_one(sub)
@@ -1230,9 +1230,9 @@ async def admin_dashboard(actor: dict = Depends(require_admin)):
         if asset == "USDT":
             total_withdrawals += amount
     trades_24h = await db.trades.count_documents({})
-    volume_24h = 0.0
+    volume_24h = Decimal("0")
     async for t in db.trades.find({}, {"_id": 0, "price": 1, "quantity": 1}):
-        volume_24h += t["price"] * t["quantity"]
+        volume_24h += to_decimal(t.get("price") or 0) * to_decimal(t.get("quantity") or 0)
     activities = await db.audit_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
     latest_users = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).limit(10).to_list(10)
     latest_users = [_public_user(u) for u in latest_users]
@@ -1681,7 +1681,7 @@ async def _seed() -> None:
         for asset in ["USDT", "BTC", "ETH"]:
             await db.wallets.insert_one({
                 "id": _new_id(), "user_id": uid, "asset": asset,
-                "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+                "spot": to_decimal128("0"), "futures": to_decimal128("0"), "earn": to_decimal128("0"), "locked": to_decimal128("0"),
                 "updated_at": _iso(_now()),
             })
     elif existing and admin_password and not verify_password(admin_password, existing.get("password_hash", "")):
