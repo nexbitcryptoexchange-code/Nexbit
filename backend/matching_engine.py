@@ -311,7 +311,7 @@ class MatchingEngine:
                     else:
                         await self._move(user["id"], base, "locked", -remaining, session, order_id, "trade.order.cancel")
                         await self._move(user["id"], base, "spot", remaining, session, order_id, "trade.order.cancel")
-                    await db.orders.update_one(
+                    changed = await db.orders.update_one(
                         {"id": order_id, "user_id": user["id"], "status": {"$in": ["open", "partial"]}},
                         {"$set": {
                             "status": "cancelled",
@@ -321,6 +321,8 @@ class MatchingEngine:
                         }},
                         session=session,
                     )
+                    if changed.matched_count != 1:
+                        raise HTTPException(409, "Order changed during cancellation; retry")
             return await db.orders.find_one({"id": order_id}, {"_id": 0})
 
     async def _candidates(self, pair: str, side: str, order_type: str, price: Decimal | None) -> list[dict]:
