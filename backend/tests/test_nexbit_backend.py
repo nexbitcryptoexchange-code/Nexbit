@@ -84,6 +84,33 @@ def test_user_deposit_cannot_create_balance():
     assert float(usdt["spot"]) == 0.0
 
 
+def test_user_kyc_document_number_is_masked():
+    token, _ = _register()
+    document_number = "P123456789"
+    submitted = requests.post(
+        f"{API}/user/kyc",
+        headers=_headers(token),
+        json={
+            "full_name": "NEXBIT E2E",
+            "document_type": "passport",
+            "document_number": document_number,
+            "country": "IN",
+            "dob": "1990-01-01",
+        },
+        timeout=20,
+    )
+    assert submitted.status_code == 200, submitted.text
+    submitted_kyc = submitted.json()["kyc"]
+    assert submitted_kyc["document_number"] == "*" * (len(document_number) - 4) + document_number[-4:]
+    assert submitted_kyc["document_number"] != document_number
+
+    fetched = requests.get(f"{API}/user/kyc", headers=_headers(token), timeout=20)
+    assert fetched.status_code == 200, fetched.text
+    fetched_kyc = fetched.json()["kyc"]
+    assert fetched_kyc["document_number"] == submitted_kyc["document_number"]
+    assert fetched_kyc["document_number"] != document_number
+
+
 def test_market_pairs_are_well_formed():
     response = requests.get(f"{API}/market/pairs", timeout=20)
     assert response.status_code == 200, response.text
