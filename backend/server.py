@@ -22,6 +22,7 @@ if PRODUCTION_MODE:
         raise RuntimeError("JWT_SECRET must be a strong secret (32+ chars) when NEXBIT_PRODUCTION=true")
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query, WebSocket, WebSocketDisconnect
+from pymongo.errors import DuplicateKeyError
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 
@@ -470,13 +471,13 @@ async def pairs():
 wallet_r = APIRouter(prefix="/wallet", tags=["wallet"])
 
 
-async def _get_wallet(uid: str, asset: str) -> dict:
-    w = await db.wallets.find_one({"user_id": uid, "asset": asset})
+async def _get_wallet(uid: str, asset: str, session=None) -> dict:
+    w = await db.wallets.find_one({"user_id": uid, "asset": asset}, session=session)
     if not w:
         w = {"id": _new_id(), "user_id": uid, "asset": asset,
              "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
              "updated_at": _iso(_now())}
-        await db.wallets.insert_one(w)
+        await db.wallets.insert_one(w, session=session)
     w.pop("_id", None)
     return w
 
@@ -489,6 +490,7 @@ async def _adjust(
     *,
     reason: str = "balance.adjust",
     reference_id: Optional[str] = None,
+    session=None,
 ) -> dict:
     if bucket not in {"spot", "futures", "earn", "locked"}:
         raise HTTPException(500, "Invalid wallet bucket")
@@ -496,7 +498,7 @@ async def _adjust(
         return await _get_wallet(uid, asset)
 
     asset = asset.upper()
-    await _get_wallet(uid, asset)
+    await _get_wallet(uid, asset, session=session)
     now = _iso(_now())
     query = {"user_id": uid, "asset": asset}
     if delta < 0:
@@ -505,11 +507,12 @@ async def _adjust(
     result = await db.wallets.update_one(
         query,
         {"$inc": {bucket: delta}, "$set": {"updated_at": now}},
+        session=session,
     )
     if result.matched_count != 1:
         raise HTTPException(400, f"Insufficient {asset} in {bucket}")
 
-    wallet = await db.wallets.find_one({"user_id": uid, "asset": asset}, {"_id": 0})
+    wallet = await db.wallets.find_one({"user_id": uid, "asset": asset}, {"_id": 0}, session=session)
     balance_after = float(wallet.get(bucket) or 0.0)
     await db.ledger_entries.insert_one({
         "id": _new_id(),
@@ -1256,39 +1259,37 @@ async def admin_wallet_adjustment(
 
     delta = data.amount if data.action == "credit" else -data.amount
     reason = "admin.balance.credit" if delta > 0 else "admin.balance.debit"
-    wallet = await _adjust(
-        data.user_id,
-        asset,
-        "spot",
-        delta,
-        reason=reason,
-        reference_id=reference_id,
-    )
     tx = {
-        "id": _new_id(),
-        "user_id": data.user_id,
-        "type": "admin_adjustment",
-        "asset": asset,
-        "amount": data.amount,
-        "direction": data.action,
-        "status": "completed",
-        "bucket": "spot",
-        "reference_id": reference_id,
-        "note": data.note,
-        "admin_id": actor["id"],
-        "created_at": _iso(_now()),
+        "id": _new_id(), "user_id": data.user_id, "type": "admin_adjustment",
+        "asset": asset, "amount": data.amount, "direction": data.action,
+        "status": "completed", "bucket": "spot", "reference_id": reference_id,
+        "note": data.note, "admin_id": actor["id"], "created_at": _iso(_now()),
     }
-    await db.transactions.insert_one(tx)
+    try:
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                existing = await db.transactions.find_one(
+                    {"type": "admin_adjustment", "reference_id": reference_id},
+                    {"_id": 0}, session=session,
+                )
+                if existing:
+                    return {"tx": existing, "duplicate": True}
+                wallet = await _adjust(
+                    data.user_id, asset, "spot", delta,
+                    reason=reason, reference_id=reference_id, session=session,
+                )
+                await db.transactions.insert_one(tx, session=session)
+    except DuplicateKeyError:
+        existing = await db.transactions.find_one(
+            {"type": "admin_adjustment", "reference_id": reference_id}, {"_id": 0}
+        )
+        if existing:
+            return {"tx": existing, "duplicate": True}
+        raise
+
     await _log_audit(
-        actor["id"],
-        reason,
-        target=data.user_id,
-        meta={
-            "asset": asset,
-            "amount": data.amount,
-            "reference_id": reference_id,
-            "note": data.note,
-        },
+        actor["id"], reason, target=data.user_id,
+        meta={"asset": asset, "amount": data.amount, "reference_id": reference_id, "note": data.note},
     )
     tx.pop("_id", None)
     return {"tx": tx, "wallet": wallet}
