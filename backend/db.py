@@ -25,6 +25,7 @@ async def ensure_indexes() -> None:
     await db.orders.create_index([("pair", 1), ("status", 1)])
     await db.orders.create_index([("pair", 1), ("side", 1), ("status", 1), ("price", 1), ("created_at", 1)])
     await db.matching_locks.create_index("key", unique=True)
+    await db.order_idempotency.create_index([("user_id", 1), ("key", 1)], unique=True)
     await db.transactions.create_index([("user_id", 1), ("created_at", -1)])
     await db.transactions.create_index([("type", 1), ("reference_id", 1)], unique=True, sparse=True)
     await db.positions.create_index([("user_id", 1), ("status", 1)])
