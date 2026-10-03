@@ -1221,20 +1221,20 @@ admin_r = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(requi
 async def admin_dashboard(actor: dict = Depends(require_admin)):
     total_users = await db.users.count_documents({})
     active_markets = len(UNIVERSE)
-    total_deposits = 0.0
-    total_withdrawals = 0.0
+    total_deposits = Decimal("0")
+    total_withdrawals = Decimal("0")
     deposits_by_asset = {}
     withdrawals_by_asset = {}
     async for tx in db.transactions.find({"type": "deposit", "status": "completed"}, {"_id": 0, "amount": 1, "asset": 1}):
         asset = str(tx.get("asset") or "").upper()
-        amount = float(tx.get("amount") or 0)
-        deposits_by_asset[asset] = deposits_by_asset.get(asset, 0.0) + amount
+        amount = to_decimal(tx.get("amount") or 0)
+        deposits_by_asset[asset] = deposits_by_asset.get(asset, Decimal("0")) + amount
         if asset == "USDT":
             total_deposits += amount
     async for tx in db.transactions.find({"type": "withdraw", "status": "completed"}, {"_id": 0, "amount": 1, "asset": 1}):
         asset = str(tx.get("asset") or "").upper()
-        amount = float(tx.get("amount") or 0)
-        withdrawals_by_asset[asset] = withdrawals_by_asset.get(asset, 0.0) + amount
+        amount = to_decimal(tx.get("amount") or 0)
+        withdrawals_by_asset[asset] = withdrawals_by_asset.get(asset, Decimal("0")) + amount
         if asset == "USDT":
             total_withdrawals += amount
     trades_24h = await db.trades.count_documents({})
