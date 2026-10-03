@@ -92,7 +92,7 @@ class MatchingEngine:
                     required_quote += notional + buyer_fee
                 plan.append((maker, fill_qty, trade_price, notional, buyer_fee))
                 remaining -= fill_qty
-                if remaining <= 1e-12:
+                if remaining <= Decimal("0.000000000001"):
                     break
 
             if data.type == "market" and remaining > Decimal("0.000000000001"):
@@ -312,7 +312,7 @@ class MatchingEngine:
                         {"id": order_id, "user_id": user["id"], "status": {"$in": ["open", "partial"]}},
                         {"$set": {
                             "status": "cancelled",
-                            "remaining_qty": 0.0,
+                            "remaining_qty": to_decimal128("0"),
                             "cancelled_at": _iso(_now()),
                             "updated_at": _iso(_now()),
                         }},
@@ -320,7 +320,7 @@ class MatchingEngine:
                     )
             return await db.orders.find_one({"id": order_id}, {"_id": 0})
 
-    async def _candidates(self, pair: str, side: str, order_type: str, price: float | None) -> list[dict]:
+    async def _candidates(self, pair: str, side: str, order_type: str, price: Decimal | None) -> list[dict]:
         opposite = "sell" if side == "buy" else "buy"
         rows = await db.orders.find(
             {"pair": pair, "side": opposite, "status": {"$in": ["open", "partial"]}, "type": "limit"},
