@@ -1500,6 +1500,54 @@ async def admin_tx_decision(tx_id: str, data: AdminTxDecisionIn, actor: dict = D
     return {"ok": True}
 
 
+@admin_r.post("/transactions/{tx_id}/reconcile")
+async def admin_withdrawal_reconcile(tx_id: str, actor: dict = Depends(require_admin)):
+    """Pull the authoritative provider state when a webhook is delayed or missing."""
+    custody_enabled = os.environ.get("NEXBIT_CUSTODY_ENABLED", "false").lower() == "true"
+    custody_provider = os.environ.get("NEXBIT_CUSTODY_PROVIDER", "").strip().lower()
+    if not (PRODUCTION_MODE and custody_enabled and custody_provider == "blockbee" and custody.enabled):
+        raise HTTPException(503, "Withdrawal custody is not configured")
+
+    tx = await db.transactions.find_one({"id": tx_id, "type": "withdraw"}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Withdrawal not found")
+    if tx.get("status") not in {"submitting", "processing"}:
+        return {"ok": True, "status": tx.get("status"), "reconciled": False}
+    payout_id = tx.get("payout_id")
+    if not payout_id:
+        raise HTTPException(
+            409,
+            "Provider payout id is not recorded; do not resubmit this withdrawal. Reconcile it in the provider dashboard first",
+        )
+
+    try:
+        payout = await custody.payout_status(payout_id)
+    except (CustodyNotConfigured, CustodyProviderError) as exc:
+        await db.transactions.update_one(
+            {"id": tx_id, "status": {"$in": ["submitting", "processing"]}},
+            {"$set": {
+                "reconciliation_error": str(exc),
+                "reconciliation_failed_at": _iso(_now()),
+            }},
+        )
+        raise HTTPException(502, "Provider status could not be confirmed; funds remain locked")
+
+    async with await db.client.start_session() as session:
+        async with session.start_transaction():
+            current = await db.transactions.find_one({"id": tx_id, "type": "withdraw"}, {"_id": 0}, session=session)
+            if not current or current.get("payout_id") != payout_id:
+                raise HTTPException(409, "Withdrawal state changed during reconciliation")
+            result = await _reconcile_payout_transaction(
+                current, payout, source="admin_reconcile", session=session,
+            )
+
+    await _log_audit(
+        actor["id"], "admin.withdrawal.reconcile", target=tx_id,
+        meta={"payout_id": payout_id, "provider_status": payout.get("status"), "result": result["status"]},
+    )
+    return {"ok": True, "reconciled": result["changed"], "status": result["status"], "payout": payout}
+
+
 @admin_r.get("/orders")
 async def admin_orders(status: Optional[str] = None, limit: int = 100, actor: dict = Depends(require_admin)):
     q = {}
