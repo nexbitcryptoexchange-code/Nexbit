@@ -269,8 +269,13 @@ async def resend_verification(user: dict = Depends(get_current_user)):
 
 @auth.post("/2fa")
 async def toggle_2fa(data: TwoFAIn, user: dict = Depends(get_current_user)):
-    await db.users.update_one({"id": user["id"]}, {"$set": {"twofa_enabled": data.enabled}})
-    return {"ok": True}
+    if data.enabled:
+        # Do not advertise a security control that is not backed by a real OTP
+        # enrollment/challenge flow. Enabling it without enforcement would create
+        # a false sense of account protection.
+        raise HTTPException(503, "2FA enrollment is not configured yet")
+    await db.users.update_one({"id": user["id"]}, {"$set": {"twofa_enabled": False}})
+    return {"ok": True, "twofa_enabled": False}
 
 
 # ============================================================================
