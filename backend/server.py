@@ -1390,15 +1390,22 @@ async def admin_tx_decision(tx_id: str, data: AdminTxDecisionIn, actor: dict = D
                 tx["amount"],
             )
         except (CustodyNotConfigured, CustodyProviderError) as exc:
+            # Do not return an ambiguous provider failure to pending. The provider
+            # may have accepted the payout before the HTTP request failed; moving
+            # back to pending would allow a second submission and double payout.
+            # Keep the transaction in submitting until an operator reconciles the
+            # provider state, so the reserved funds remain protected.
             await db.transactions.update_one(
                 {"id": tx_id, "status": "submitting"},
                 {"$set": {
-                    "status": "pending",
                     "submission_error": str(exc),
                     "submission_failed_at": _iso(_now()),
                 }},
             )
-            raise HTTPException(502, str(exc))
+            raise HTTPException(
+                502,
+                "Withdrawal submission could not be confirmed; manual provider reconciliation is required",
+            )
 
         now = _iso(_now())
         updated = await db.transactions.update_one(
