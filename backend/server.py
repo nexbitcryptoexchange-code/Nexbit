@@ -611,7 +611,7 @@ def _parse_pair(pair: str) -> tuple[str, str]:
 async def place_order(data: OrderIn, user: dict = Depends(get_current_user)):
     if user.get("status") != "active":
         raise HTTPException(403, "Trading is unavailable for this account")
-    order = await matching_engine.place(data, user, _adjust)
+    order = await matching_engine.place(data, user)
     await _log_audit(
         user["id"],
         "trade.order",
@@ -637,7 +637,7 @@ async def orders(status: Optional[str] = None, user: dict = Depends(get_current_
 
 @trade_r.post("/orders/{order_id}/cancel")
 async def cancel_order(order_id: str, user: dict = Depends(get_current_user)):
-    order = await matching_engine.cancel(order_id, user, _adjust)
+    order = await matching_engine.cancel(order_id, user)
     await _log_audit(user["id"], "trade.order.cancel", target=order_id)
     return {"ok": True, "order": order}
 
