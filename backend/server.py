@@ -826,9 +826,10 @@ async def blockbee_deposit_webhook(request: Request):
         raise HTTPException(400, "Invalid deposit amount")
 
     now = _iso(_now())
-    async with await db.client.start_session() as session:
-        async with session.start_transaction():
-            event = await db.blockchain_events.find_one(
+    try:
+        async with await db.client.start_session() as session:
+            async with session.start_transaction():
+                event = await db.blockchain_events.find_one(
                 {"provider": "blockbee", "event_id": uuid_value},
                 {"_id": 0},
                 session=session,
@@ -898,6 +899,23 @@ async def blockbee_deposit_webhook(request: Request):
                 }},
                 session=session,
             )
+
+            await db.blockchain_events.update_one(
+                {"provider": "blockbee", "event_id": uuid_value},
+                {"$set": {
+                    "status": "confirmed", "amount": amount, "txid_out": fields.get("txid_out"),
+                    "confirmations": int(fields.get("confirmations") or 0), "updated_at": now,
+                }},
+                session=session,
+            )
+    except DuplicateKeyError:
+        existing_tx = await db.transactions.find_one(
+            {"type": "deposit", "reference_id": uuid_value},
+            {"_id": 0},
+        )
+        if existing_tx and existing_tx.get("status") == "completed":
+            return Response(content="*ok*", media_type="text/plain")
+        raise
 
     await _log_audit(
         user_id, "wallet.deposit.confirmed",
