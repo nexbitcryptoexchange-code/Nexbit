@@ -1181,7 +1181,7 @@ admin_r = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(requi
 
 
 @admin_r.get("/dashboard")
-async def admin_dashboard():
+async def admin_dashboard(actor: dict = Depends(require_admin)):
     total_users = await db.users.count_documents({})
     active_markets = len(UNIVERSE)
     total_deposits = 0.0
@@ -1212,7 +1212,7 @@ async def admin_dashboard():
 
 
 @admin_r.get("/users")
-async def admin_users(q: Optional[str] = None, limit: int = 50):
+async def admin_users(q: Optional[str] = None, limit: int = 50, actor: dict = Depends(require_admin)):
     query = {}
     if q:
         query = {"$or": [{"email": {"$regex": q, "$options": "i"}}, {"name": {"$regex": q, "$options": "i"}}]}
@@ -1234,7 +1234,7 @@ async def admin_update_user(user_id: str, data: AdminUserUpdateIn, actor: dict =
 
 
 @admin_r.get("/kyc")
-async def admin_kyc_list(status: Optional[str] = None):
+async def admin_kyc_list(status: Optional[str] = None, actor: dict = Depends(require_admin)):
     q = {"status": status} if status else {}
     rows = await db.kyc.find(q, {"_id": 0}).sort("created_at", -1).limit(100).to_list(100)
     for r in rows:
@@ -1256,7 +1256,7 @@ async def admin_kyc_decision(kyc_id: str, data: KycDecisionIn, actor: dict = Dep
 
 
 @admin_r.get("/transactions")
-async def admin_tx(type: Optional[str] = None, status: Optional[str] = None, limit: int = 100):
+async def admin_tx(type: Optional[str] = None, status: Optional[str] = None, limit: int = 100, actor: dict = Depends(require_admin)):
     q = {}
     if type:
         q["type"] = type
@@ -1384,7 +1384,7 @@ async def admin_tx_decision(tx_id: str, data: AdminTxDecisionIn, actor: dict = D
 
 
 @admin_r.get("/orders")
-async def admin_orders(status: Optional[str] = None, limit: int = 100):
+async def admin_orders(status: Optional[str] = None, limit: int = 100, actor: dict = Depends(require_admin)):
     q = {}
     if status:
         q["status"] = status
@@ -1396,7 +1396,7 @@ async def admin_orders(status: Optional[str] = None, limit: int = 100):
 
 
 @admin_r.get("/positions")
-async def admin_positions(status: Optional[str] = None, limit: int = 100):
+async def admin_positions(status: Optional[str] = None, limit: int = 100, actor: dict = Depends(require_admin)):
     q = {}
     if status:
         q["status"] = status
@@ -1408,7 +1408,7 @@ async def admin_positions(status: Optional[str] = None, limit: int = 100):
 
 
 @admin_r.get("/wallets")
-async def admin_wallets(limit: int = 200):
+async def admin_wallets(limit: int = 200, actor: dict = Depends(require_admin)):
     rows = await db.wallets.find({}, {"_id": 0}).limit(limit).to_list(limit)
     for r in rows:
         u = await db.users.find_one({"id": r["user_id"]}, {"_id": 0, "email": 1})
@@ -1472,7 +1472,7 @@ async def admin_wallet_adjustment(
 
 
 @admin_r.get("/pairs")
-async def admin_list_pairs():
+async def admin_list_pairs(actor: dict = Depends(require_admin)):
     rows = await db.market_pairs.find({}, {"_id": 0}).to_list(500)
     return {"items": rows}
 
@@ -1491,7 +1491,7 @@ async def admin_add_pair(data: MarketPairIn, actor: dict = Depends(require_admin
 
 
 @admin_r.get("/fees")
-async def admin_fees():
+async def admin_fees(actor: dict = Depends(require_admin)):
     f = await db.config.find_one({"id": "fees"}, {"_id": 0})
     return {"fees": f or {"spot_maker": 0.001, "spot_taker": 0.001, "futures_maker": 0.0004, "futures_taker": 0.0006, "withdraw_fee_pct": 0.001}}
 
@@ -1505,7 +1505,7 @@ async def admin_set_fees(data: FeeConfigIn, actor: dict = Depends(require_admin)
 
 
 @admin_r.get("/fees/treasury")
-async def admin_get_fee_treasury():
+async def admin_get_fee_treasury(actor: dict = Depends(require_admin)):
     row = await db.config.find_one({"id": "fee_treasury"}, {"_id": 0, "user_id": 1})
     return {"user_id": (row or {}).get("user_id")}
 
@@ -1544,13 +1544,13 @@ async def admin_set_fee_treasury(data: FeeTreasuryIn, actor: dict = Depends(requ
 
 
 @admin_r.get("/audit")
-async def admin_audit(limit: int = 100):
+async def admin_audit(limit: int = 100, actor: dict = Depends(require_admin)):
     rows = await db.audit_logs.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
     return {"items": rows}
 
 
 @admin_r.get("/support")
-async def admin_support(status: Optional[str] = None):
+async def admin_support(status: Optional[str] = None, actor: dict = Depends(require_admin)):
     q = {"status": status} if status else {}
     rows = await db.support_tickets.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
     for r in rows:
@@ -1561,13 +1561,20 @@ async def admin_support(status: Optional[str] = None):
 
 @admin_r.post("/support/reply")
 async def admin_support_reply(data: SupportReplyIn, actor: dict = Depends(require_admin)):
-    reply = {"from": "admin", "message": data.message, "at": _iso(_now())}
-    await db.support_tickets.update_one({"id": data.ticket_id}, {"$push": {"replies": reply}, "$set": {"status": "answered"}})
+    ticket = await db.support_tickets.find_one({"id": data.ticket_id}, {"_id": 0, "id": 1})
+    if not ticket:
+        raise HTTPException(404, "Support ticket not found")
+    reply = {"from": "admin", "message": data.message, "at": _iso(_now()), "admin_id": actor["id"]}
+    await db.support_tickets.update_one(
+        {"id": data.ticket_id},
+        {"$push": {"replies": reply}, "$set": {"status": "answered", "updated_at": _iso(_now())}},
+    )
+    await _log_audit(actor["id"], "admin.support.reply", target=data.ticket_id)
     return {"ok": True}
 
 
 @admin_r.get("/reports/overview")
-async def admin_reports():
+async def admin_reports(actor: dict = Depends(require_admin)):
     users = await db.users.count_documents({})
     verified = await db.users.count_documents({"kyc_status": "approved"})
     orders = await db.orders.count_documents({})
