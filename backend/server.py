@@ -32,6 +32,7 @@ from auth_utils import (
 )
 import market_data
 from market_data import UNIVERSE, STABLES, get_prices, get_price, generate_candles, generate_order_book, generate_recent_trades
+from matching_engine import matching_engine
 from emailer import send_welcome_verify, send_password_reset, send_withdrawal_update
 from models import (
     RegisterIn, LoginIn, ForgotIn, ResetIn, VerifyEmailIn, TwoFAIn, ProfileUpdateIn,
@@ -608,10 +609,22 @@ def _parse_pair(pair: str) -> tuple[str, str]:
 
 @trade_r.post("/order")
 async def place_order(data: OrderIn, user: dict = Depends(get_current_user)):
-    raise HTTPException(
-        503,
-        "Spot matching engine is not enabled; orders cannot be filled against external reference prices",
+    if user.get("status") != "active":
+        raise HTTPException(403, "Trading is unavailable for this account")
+    order = await matching_engine.place(data, user, _adjust)
+    await _log_audit(
+        user["id"],
+        "trade.order",
+        target=order["id"],
+        meta={
+            "pair": order["pair"],
+            "side": order["side"],
+            "type": order["type"],
+            "quantity": order["quantity"],
+            "filled_qty": order.get("filled_qty", 0),
+        },
     )
+    return {"order": order}
 
 @trade_r.get("/orders")
 async def orders(status: Optional[str] = None, user: dict = Depends(get_current_user)):
@@ -627,17 +640,28 @@ async def cancel_order(order_id: str, user: dict = Depends(get_current_user)):
     o = await db.orders.find_one({"id": order_id, "user_id": user["id"]})
     if not o:
         raise HTTPException(404, "Order not found")
-    if o["status"] != "open":
+    if o["status"] not in {"open", "partial"}:
         raise HTTPException(400, "Order not open")
     base, quote = _parse_pair(o["pair"])
+    remaining = float(o.get("remaining_qty") or (float(o["quantity"]) - float(o.get("filled_qty") or 0)))
+    if remaining <= 0:
+        raise HTTPException(400, "Order has no remaining quantity")
     if o["side"] == "buy":
-        locked = o["quantity"] * o["price"]
-        await _adjust(user["id"], quote, "locked", -locked)
-        await _adjust(user["id"], quote, "spot", locked)
+        fee = 0.001
+        market = await db.market_pairs.find_one({"symbol": o["pair"]}, {"_id": 0, "taker_fee": 1})
+        if market:
+            fee = float(market.get("taker_fee", fee))
+        release = remaining * float(o["price"]) * (1.0 + fee)
+        await _adjust(user["id"], quote, "locked", -release, reason="trade.order.cancel", reference_id=order_id)
+        await _adjust(user["id"], quote, "spot", release, reason="trade.order.cancel", reference_id=order_id)
     else:
-        await _adjust(user["id"], base, "locked", -o["quantity"])
-        await _adjust(user["id"], base, "spot", o["quantity"])
-    await db.orders.update_one({"id": order_id}, {"$set": {"status": "cancelled"}})
+        await _adjust(user["id"], base, "locked", -remaining, reason="trade.order.cancel", reference_id=order_id)
+        await _adjust(user["id"], base, "spot", remaining, reason="trade.order.cancel", reference_id=order_id)
+    await db.orders.update_one(
+        {"id": order_id, "user_id": user["id"], "status": {"$in": ["open", "partial"]}},
+        {"$set": {"status": "cancelled", "remaining_qty": 0.0, "cancelled_at": _iso(_now()), "updated_at": _iso(_now())}},
+    )
+    await _log_audit(user["id"], "trade.order.cancel", target=order_id)
     return {"ok": True}
 
 
