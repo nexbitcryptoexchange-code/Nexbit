@@ -37,7 +37,7 @@ from models import (
     RegisterIn, LoginIn, ForgotIn, ResetIn, VerifyEmailIn, TwoFAIn, ProfileUpdateIn,
     KycSubmitIn, KycDecisionIn, OrderIn, FuturesOrderIn, ClosePositionIn,
     DepositIn, WithdrawIn, TransferIn, EarnSubscribeIn, ApiKeyIn,
-    AdminUserUpdateIn, AdminTxDecisionIn, MarketPairIn, FeeConfigIn,
+    AdminUserUpdateIn, AdminTxDecisionIn, AdminBalanceAdjustmentIn, MarketPairIn, FeeConfigIn,
     SupportTicketIn, SupportReplyIn,
 )
 
@@ -432,17 +432,48 @@ async def _get_wallet(uid: str, asset: str) -> dict:
     return w
 
 
-async def _adjust(uid: str, asset: str, bucket: str, delta: float) -> dict:
-    w = await _get_wallet(uid, asset)
-    new_val = (w.get(bucket) or 0.0) + delta
-    if new_val < -1e-9:
-        raise HTTPException(400, f"Insufficient {asset} in {bucket}")
-    await db.wallets.update_one(
-        {"user_id": uid, "asset": asset},
-        {"$set": {bucket: max(0.0, new_val), "updated_at": _iso(_now())}},
+async def _adjust(
+    uid: str,
+    asset: str,
+    bucket: str,
+    delta: float,
+    *,
+    reason: str = "balance.adjust",
+    reference_id: Optional[str] = None,
+) -> dict:
+    if bucket not in {"spot", "futures", "earn", "locked"}:
+        raise HTTPException(500, "Invalid wallet bucket")
+    if delta == 0:
+        return await _get_wallet(uid, asset)
+
+    asset = asset.upper()
+    await _get_wallet(uid, asset)
+    now = _iso(_now())
+    query = {"user_id": uid, "asset": asset}
+    if delta < 0:
+        query[bucket] = {"$gte": abs(delta)}
+
+    result = await db.wallets.update_one(
+        query,
+        {"$inc": {bucket: delta}, "$set": {"updated_at": now}},
     )
-    w[bucket] = max(0.0, new_val)
-    return w
+    if result.matched_count != 1:
+        raise HTTPException(400, f"Insufficient {asset} in {bucket}")
+
+    wallet = await db.wallets.find_one({"user_id": uid, "asset": asset}, {"_id": 0})
+    balance_after = float(wallet.get(bucket) or 0.0)
+    await db.ledger_entries.insert_one({
+        "id": _new_id(),
+        "user_id": uid,
+        "asset": asset,
+        "bucket": bucket,
+        "delta": delta,
+        "balance_after": balance_after,
+        "reason": reason,
+        "reference_id": reference_id,
+        "created_at": now,
+    })
+    return wallet
 
 
 @wallet_r.get("/balances")
@@ -472,20 +503,9 @@ async def transactions(user: dict = Depends(get_current_user), limit: int = 100)
 
 @wallet_r.post("/deposit")
 async def deposit(data: DepositIn, user: dict = Depends(get_current_user)):
-    if PRODUCTION_MODE:
-        raise HTTPException(503, "On-chain deposit integration is not configured")
-    asset = data.asset.upper()
-    tx = {
-        "id": _new_id(), "user_id": user["id"], "type": "deposit",
-        "asset": asset, "amount": data.amount, "status": "completed",
-        "address": f"nx_{asset.lower()}_{secrets.token_hex(8)}",
-        "network": asset, "created_at": _iso(_now()),
-    }
-    await db.transactions.insert_one(tx)
-    await _adjust(user["id"], asset, "spot", data.amount)
-    tx.pop("_id", None)
-    await _log_audit(user["id"], "wallet.deposit", meta={"asset": asset, "amount": data.amount})
-    return {"tx": tx}
+    # User-facing deposits never credit balances directly. A future blockchain
+    # watcher will create a verified ledger credit after confirmations.
+    raise HTTPException(410, "User deposits are disabled until on-chain confirmation is integrated")
 
 
 @wallet_r.post("/withdraw")
@@ -938,6 +958,63 @@ async def admin_wallets(limit: int = 200):
         u = await db.users.find_one({"id": r["user_id"]}, {"_id": 0, "email": 1})
         r["email"] = u.get("email") if u else "?"
     return {"items": rows}
+
+
+@admin_r.post("/wallets/adjust")
+async def admin_wallet_adjustment(
+    data: AdminBalanceAdjustmentIn,
+    actor: dict = Depends(require_admin),
+):
+    target = await db.users.find_one({"id": data.user_id}, {"_id": 0, "id": 1, "email": 1, "status": 1})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("status") == "banned":
+        raise HTTPException(400, "Cannot adjust a banned user")
+
+    asset = data.asset.upper()
+    reference_id = data.reference_id or _new_id()
+    existing = await db.transactions.find_one({"type": "admin_adjustment", "reference_id": reference_id}, {"_id": 0})
+    if existing:
+        return {"tx": existing, "duplicate": True}
+
+    delta = data.amount if data.action == "credit" else -data.amount
+    reason = "admin.balance.credit" if delta > 0 else "admin.balance.debit"
+    wallet = await _adjust(
+        data.user_id,
+        asset,
+        "spot",
+        delta,
+        reason=reason,
+        reference_id=reference_id,
+    )
+    tx = {
+        "id": _new_id(),
+        "user_id": data.user_id,
+        "type": "admin_adjustment",
+        "asset": asset,
+        "amount": data.amount,
+        "direction": data.action,
+        "status": "completed",
+        "bucket": "spot",
+        "reference_id": reference_id,
+        "note": data.note,
+        "admin_id": actor["id"],
+        "created_at": _iso(_now()),
+    }
+    await db.transactions.insert_one(tx)
+    await _log_audit(
+        actor["id"],
+        reason,
+        target=data.user_id,
+        meta={
+            "asset": asset,
+            "amount": data.amount,
+            "reference_id": reference_id,
+            "note": data.note,
+        },
+    )
+    tx.pop("_id", None)
+    return {"tx": tx, "wallet": wallet}
 
 
 @admin_r.get("/pairs")
