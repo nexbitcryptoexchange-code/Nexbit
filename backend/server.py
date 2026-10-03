@@ -8,6 +8,7 @@ import logging
 import asyncio
 import random
 from pathlib import Path
+from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from urllib.parse import parse_qs
@@ -36,6 +37,7 @@ from auth_utils import (
 import market_data
 from market_data import UNIVERSE, STABLES, get_prices, get_price, generate_candles, generate_order_book, generate_recent_trades
 from matching_engine import matching_engine
+from financial import to_decimal, to_decimal128
 from custody import custody, CustodyNotConfigured, CustodyProviderError
 from emailer import send_welcome_verify, send_password_reset, send_withdrawal_update
 from models import (
@@ -536,14 +538,38 @@ wallet_r = APIRouter(prefix="/wallet", tags=["wallet"])
 
 
 async def _get_wallet(uid: str, asset: str, session=None) -> dict:
+    asset = asset.upper()
     w = await db.wallets.find_one({"user_id": uid, "asset": asset}, session=session)
     if not w:
         w = {"id": _new_id(), "user_id": uid, "asset": asset,
-             "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+             "spot": to_decimal128("0"), "futures": to_decimal128("0"),
+             "earn": to_decimal128("0"), "locked": to_decimal128("0"),
              "updated_at": _iso(_now())}
         await db.wallets.insert_one(w, session=session)
+    else:
+        fields = ("spot", "futures", "earn", "locked")
+        if any(not hasattr(w.get(field), "to_decimal") for field in fields):
+            converted = {field: to_decimal128(w.get(field, 0)) for field in fields}
+            await db.wallets.update_one(
+                {"user_id": uid, "asset": asset},
+                {"$set": {**converted, "updated_at": _iso(_now())}},
+                session=session,
+            )
+            w.update(converted)
     w.pop("_id", None)
     return w
+
+def _public_wallet(wallet: dict) -> dict:
+    out = dict(wallet)
+    for field in ("spot", "futures", "earn", "locked"):
+        out[field] = float(to_decimal(wallet.get(field, 0)))
+    return out
+
+def _public_transaction(tx: dict) -> dict:
+    out = dict(tx)
+    if "amount" in out:
+        out["amount"] = float(to_decimal(out["amount"]))
+    return out
 
 
 async def _adjust(
@@ -558,37 +584,39 @@ async def _adjust(
 ) -> dict:
     if bucket not in {"spot", "futures", "earn", "locked"}:
         raise HTTPException(500, "Invalid wallet bucket")
+    delta = to_decimal(delta)
     if delta == 0:
-        return await _get_wallet(uid, asset)
+        return await _get_wallet(uid, asset, session=session)
 
     asset = asset.upper()
     await _get_wallet(uid, asset, session=session)
     now = _iso(_now())
+    delta128 = to_decimal128(delta)
     query = {"user_id": uid, "asset": asset}
     if delta < 0:
-        query[bucket] = {"$gte": abs(delta)}
+        query[bucket] = {"$gte": to_decimal128(-delta)}
 
     result = await db.wallets.update_one(
         query,
-        {"$inc": {bucket: delta}, "$set": {"updated_at": now}},
+        {"$inc": {bucket: delta128}, "$set": {"updated_at": now}},
         session=session,
     )
     if result.matched_count != 1:
         raise HTTPException(400, f"Insufficient {asset} in {bucket}")
 
     wallet = await db.wallets.find_one({"user_id": uid, "asset": asset}, {"_id": 0}, session=session)
-    balance_after = float(wallet.get(bucket) or 0.0)
+    balance_after = wallet.get(bucket) or to_decimal128("0")
     await db.ledger_entries.insert_one({
         "id": _new_id(),
         "user_id": uid,
         "asset": asset,
         "bucket": bucket,
-        "delta": delta,
+        "delta": delta128,
         "balance_after": balance_after,
         "reason": reason,
         "reference_id": reference_id,
         "created_at": now,
-    })
+    }, session=session)
     return wallet
 
 
@@ -596,25 +624,25 @@ async def _adjust(
 async def balances(user: dict = Depends(get_current_user)):
     rows = await db.wallets.find({"user_id": user["id"]}, {"_id": 0}).to_list(100)
     prices = await get_prices()
-    total_usd = 0.0
+    total_usd = Decimal("0")
+    public_rows = []
     for r in rows:
-        if r["asset"] == "USDT":
-            p = 1.0
-        else:
-            p = (prices.get(r["asset"]) or {}).get("price", 0.0)
-        total = (r.get("spot") or 0) + (r.get("futures") or 0) + (r.get("earn") or 0) + (r.get("locked") or 0)
-        r["usd_value"] = total * p
-        r["price"] = p
-        r["total"] = total
-        total_usd += r["usd_value"]
-    rows.sort(key=lambda x: -x["usd_value"])
-    return {"total_usd": total_usd, "items": rows}
+        p = Decimal("1") if r["asset"] == "USDT" else Decimal(str((prices.get(r["asset"]) or {}).get("price", 0.0)))
+        total = sum((to_decimal(r.get(field, 0)) for field in ("spot", "futures", "earn", "locked")), Decimal("0"))
+        public = _public_wallet(r)
+        public["usd_value"] = float(total * p)
+        public["price"] = float(p)
+        public["total"] = float(total)
+        public_rows.append(public)
+        total_usd += total * p
+    public_rows.sort(key=lambda x: -x["usd_value"])
+    return {"total_usd": float(total_usd), "items": public_rows}
 
 
 @wallet_r.get("/transactions")
 async def transactions(user: dict = Depends(get_current_user), limit: int = 100):
     rows = await db.transactions.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
-    return {"items": rows}
+    return {"items": [_public_transaction(row) for row in rows]}
 
 
 @wallet_r.get("/deposit/address")
@@ -696,7 +724,7 @@ async def withdraw(data: WithdrawIn, user: dict = Depends(get_current_user)):
     now = _iso(_now())
     tx = {
         "id": _new_id(), "user_id": user["id"], "type": "withdraw",
-        "asset": asset, "amount": data.amount, "status": "pending",
+        "asset": asset, "amount": to_decimal128(data.amount), "status": "pending",
         "address": address, "network": network,
         "reference_id": _new_id(),
         "created_at": now,
@@ -707,12 +735,13 @@ async def withdraw(data: WithdrawIn, user: dict = Depends(get_current_user)):
             await _adjust(user["id"], asset, "locked", data.amount, session=session)
             await db.transactions.insert_one(tx, session=session)
     tx.pop("_id", None)
+    public_tx = _public_transaction(tx)
     await _log_audit(
         user["id"], "wallet.withdraw.request",
         target=tx["id"],
-        meta={"asset": asset, "amount": data.amount, "network": network},
+        meta={"asset": asset, "amount": public_tx["amount"], "network": network},
     )
-    return {"tx": tx}
+    return {"tx": public_tx}
 
 
 @wallet_r.post("/transfer")
@@ -727,7 +756,7 @@ async def transfer(data: TransferIn, user: dict = Depends(get_current_user)):
     asset = data.asset.upper().strip()
     tx = {
         "id": _new_id(), "user_id": user["id"], "type": "transfer",
-        "asset": asset, "amount": data.amount, "status": "completed",
+        "asset": asset, "amount": to_decimal128(data.amount), "status": "completed",
         "from_wallet": data.from_wallet, "to_wallet": data.to_wallet,
         "reference_id": _new_id(),
         "created_at": _iso(_now()),
@@ -738,12 +767,12 @@ async def transfer(data: TransferIn, user: dict = Depends(get_current_user)):
             await _adjust(user["id"], asset, data.to_wallet, data.amount, session=session)
             await db.transactions.insert_one(tx, session=session)
     tx.pop("_id", None)
+    public_tx = _public_transaction(tx)
     await _log_audit(
         user["id"], "wallet.transfer",
-        target=tx["id"],
-        meta={"asset": asset, "amount": data.amount, "from": data.from_wallet, "to": data.to_wallet},
+        target=tx["id"], meta={"asset": asset, "amount": public_tx["amount"], "from": data.from_wallet, "to": data.to_wallet},
     )
-    return {"tx": tx}
+    return {"tx": public_tx}
 
 
 @api.post("/webhooks/blockbee/deposit")
@@ -790,7 +819,7 @@ async def blockbee_deposit_webhook(request: Request):
         return Response(content="*ok*", media_type="text/plain")
 
     try:
-        amount = float(fields.get("value_forwarded_coin") or fields.get("value_coin") or 0)
+        amount = Decimal(str(fields.get("value_forwarded_coin") or fields.get("value_coin") or 0))
     except ValueError:
         raise HTTPException(400, "Invalid deposit amount")
     if amount <= 0:
@@ -842,7 +871,7 @@ async def blockbee_deposit_webhook(request: Request):
             )
             await db.wallets.update_one(
                 {"user_id": user_id, "asset": asset},
-                {"$inc": {"spot": amount}, "$set": {"updated_at": now}},
+                {"$inc": {"spot": to_decimal128(amount)}, "$set": {"updated_at": now}},
                 session=session,
             )
             wallet = await db.wallets.find_one(
@@ -852,12 +881,12 @@ async def blockbee_deposit_webhook(request: Request):
             )
             await db.ledger_entries.insert_one({
                 "id": _new_id(), "user_id": user_id, "asset": asset, "bucket": "spot",
-                "delta": amount, "balance_after": float(wallet.get("spot") or 0),
+                "delta": to_decimal128(amount), "balance_after": wallet.get("spot") or to_decimal128("0"),
                 "reason": "blockbee.deposit.confirmed", "reference_id": uuid_value, "created_at": now,
             }, session=session)
             await db.transactions.insert_one({
                 "id": _new_id(), "user_id": user_id, "type": "deposit", "asset": asset,
-                "amount": amount, "status": "completed", "address": address_in,
+                "amount": to_decimal128(amount), "status": "completed", "address": address_in,
                 "network": network, "txid": fields.get("txid_in"), "provider": "blockbee",
                 "reference_id": uuid_value, "created_at": now,
             }, session=session)
@@ -1449,7 +1478,7 @@ async def admin_wallet_adjustment(
     reason = "admin.balance.credit" if delta > 0 else "admin.balance.debit"
     tx = {
         "id": _new_id(), "user_id": data.user_id, "type": "admin_adjustment",
-        "asset": asset, "amount": data.amount, "direction": data.action,
+        "asset": asset, "amount": to_decimal128(data.amount), "direction": data.action,
         "status": "completed", "bucket": "spot", "reference_id": reference_id,
         "note": data.note, "admin_id": actor["id"], "created_at": _iso(_now()),
     }
@@ -1480,7 +1509,7 @@ async def admin_wallet_adjustment(
         meta={"asset": asset, "amount": data.amount, "reference_id": reference_id, "note": data.note},
     )
     tx.pop("_id", None)
-    return {"tx": tx, "wallet": wallet}
+    return {"tx": _public_transaction(tx), "wallet": _public_wallet(wallet)}
 
 
 @admin_r.get("/pairs")
