@@ -158,6 +158,14 @@ class BlockBeeCustody:
         )
         return data.get("payout_info") or {}
 
+    async def process_payout(self, payout_id: str) -> dict:
+        data = await self._request(
+            "POST",
+            "/payout/process/",
+            data={"payout_id": payout_id},
+        )
+        return data.get("payout_info") or {}
+
     def verify_signature(self, payload: bytes, signature_b64: str) -> bool:
         self.require_enabled()
         if not signature_b64:
