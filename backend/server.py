@@ -343,7 +343,14 @@ async def delete_api_key(key_id: str, user: dict = Depends(get_current_user)):
 async def referral(user: dict = Depends(get_current_user)):
     code = user["id"][:8].upper()
     referrals = await db.users.count_documents({"referred_by": user["id"]})
-    return {"code": code, "referrals": referrals, "earnings_usdt": referrals * 15.0}
+    # Referral payouts are not enabled until a real, ledger-backed reward
+    # engine is configured. Never expose a synthetic earnings amount.
+    return {
+        "code": code,
+        "referrals": referrals,
+        "earnings_usdt": 0.0,
+        "rewards_enabled": False,
+    }
 
 
 # ============================================================================
