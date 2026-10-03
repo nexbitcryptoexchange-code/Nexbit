@@ -1186,10 +1186,20 @@ async def admin_dashboard(actor: dict = Depends(require_admin)):
     active_markets = len(UNIVERSE)
     total_deposits = 0.0
     total_withdrawals = 0.0
+    deposits_by_asset = {}
+    withdrawals_by_asset = {}
     async for tx in db.transactions.find({"type": "deposit", "status": "completed"}, {"_id": 0, "amount": 1, "asset": 1}):
-        total_deposits += tx["amount"] if tx["asset"] == "USDT" else tx["amount"] * 1000
+        asset = str(tx.get("asset") or "").upper()
+        amount = float(tx.get("amount") or 0)
+        deposits_by_asset[asset] = deposits_by_asset.get(asset, 0.0) + amount
+        if asset == "USDT":
+            total_deposits += amount
     async for tx in db.transactions.find({"type": "withdraw", "status": "completed"}, {"_id": 0, "amount": 1, "asset": 1}):
-        total_withdrawals += tx["amount"] if tx["asset"] == "USDT" else tx["amount"] * 1000
+        asset = str(tx.get("asset") or "").upper()
+        amount = float(tx.get("amount") or 0)
+        withdrawals_by_asset[asset] = withdrawals_by_asset.get(asset, 0.0) + amount
+        if asset == "USDT":
+            total_withdrawals += amount
     trades_24h = await db.trades.count_documents({})
     volume_24h = 0.0
     async for t in db.trades.find({}, {"_id": 0, "price": 1, "quantity": 1}):
@@ -1203,6 +1213,8 @@ async def admin_dashboard(actor: dict = Depends(require_admin)):
             "trading_volume_24h": volume_24h,
             "total_deposits": total_deposits,
             "total_withdrawals": total_withdrawals,
+            "deposits_by_asset": deposits_by_asset,
+            "withdrawals_by_asset": withdrawals_by_asset,
             "active_markets": active_markets,
             "trades_count": trades_24h,
         },
