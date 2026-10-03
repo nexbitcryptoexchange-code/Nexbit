@@ -31,6 +31,7 @@ jobs:
       CORS_ORIGINS: "*"
       NEXBIT_PRODUCTION: "false"
       NEXBIT_CUSTODY_ENABLED: "false"
+      JWT_SECRET: "ci-only-jwt-secret-change-me-8f1e2d7c9b4a6f3e"
 
     steps:
       - name: Checkout
