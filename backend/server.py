@@ -677,31 +677,17 @@ async def blockbee_deposit_webhook(request: Request):
     if f"nonce={nonce}" not in address.get("callback_url", ""):
         raise HTTPException(403, "Invalid deposit nonce")
 
-    event = await db.blockchain_events.find_one({"provider": "blockbee", "event_id": uuid_value}, {"_id": 0})
-    if event and event.get("status") == "confirmed":
-        return Response(content="*ok*", media_type="text/plain")
-
-    now = _iso(_now())
-    event_doc = {
-        "provider": "blockbee", "event_id": uuid_value, "user_id": user_id,
-        "asset": asset, "network": network, "address": address_in,
-        "txid_in": fields.get("txid_in"), "pending": pending == "1",
-        "status": "pending" if pending == "1" else "confirmed", "updated_at": now,
-    }
-    if not event:
-        try:
-            await db.blockchain_events.insert_one(event_doc)
-        except Exception:
-            event = await db.blockchain_events.find_one({"provider": "blockbee", "event_id": uuid_value}, {"_id": 0})
-            if event and event.get("status") == "confirmed":
-                return Response(content="*ok*", media_type="text/plain")
-    else:
+    if pending == "1":
         await db.blockchain_events.update_one(
             {"provider": "blockbee", "event_id": uuid_value},
-            {"$set": event_doc},
+            {"$set": {
+                "provider": "blockbee", "event_id": uuid_value, "user_id": user_id,
+                "asset": asset, "network": network, "address": address_in,
+                "txid_in": fields.get("txid_in"), "pending": True,
+                "status": "pending", "updated_at": _iso(_now()),
+            }},
+            upsert=True,
         )
-
-    if pending == "1":
         return Response(content="*ok*", media_type="text/plain")
 
     try:
@@ -711,53 +697,85 @@ async def blockbee_deposit_webhook(request: Request):
     if amount <= 0:
         raise HTTPException(400, "Invalid deposit amount")
 
-    existing_tx = await db.transactions.find_one({"type": "deposit", "reference_id": uuid_value}, {"_id": 0})
-    if existing_tx and existing_tx.get("status") == "completed":
-        await db.blockchain_events.update_one(
-            {"provider": "blockbee", "event_id": uuid_value},
-            {"$set": {"status": "confirmed", "updated_at": now}},
-        )
-        return Response(content="*ok*", media_type="text/plain")
+    now = _iso(_now())
+    async with await db.client.start_session() as session:
+        async with session.start_transaction():
+            event = await db.blockchain_events.find_one(
+                {"provider": "blockbee", "event_id": uuid_value},
+                {"_id": 0},
+                session=session,
+            )
+            if event and event.get("status") == "confirmed":
+                return Response(content="*ok*", media_type="text/plain")
+            await db.blockchain_events.update_one(
+                {"provider": "blockbee", "event_id": uuid_value},
+                {"$set": {
+                    "provider": "blockbee", "event_id": uuid_value, "user_id": user_id,
+                    "asset": asset, "network": network, "address": address_in,
+                    "txid_in": fields.get("txid_in"), "pending": False,
+                    "status": "processing", "updated_at": now,
+                }},
+                upsert=True,
+                session=session,
+            )
+            existing_tx = await db.transactions.find_one(
+                {"type": "deposit", "reference_id": uuid_value},
+                {"_id": 0},
+                session=session,
+            )
+            if existing_tx and existing_tx.get("status") == "completed":
+                await db.blockchain_events.update_one(
+                    {"provider": "blockbee", "event_id": uuid_value},
+                    {"$set": {"status": "confirmed", "updated_at": now}},
+                    session=session,
+                )
+                return Response(content="*ok*", media_type="text/plain")
 
-    await db.wallets.update_one(
-        {"user_id": user_id, "asset": asset},
-        {"$setOnInsert": {
-            "id": _new_id(), "user_id": user_id, "asset": asset,
-            "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0, "updated_at": now,
-        }},
-        upsert=True,
-    )
-    await db.wallets.update_one(
-        {"user_id": user_id, "asset": asset},
-        {"$inc": {"spot": amount}, "$set": {"updated_at": now}},
-    )
-    wallet = await db.wallets.find_one({"user_id": user_id, "asset": asset}, {"_id": 0})
-    await db.ledger_entries.insert_one({
-        "id": _new_id(), "user_id": user_id, "asset": asset, "bucket": "spot",
-        "delta": amount, "balance_after": float(wallet.get("spot") or 0),
-        "reason": "blockbee.deposit.confirmed", "reference_id": uuid_value, "created_at": now,
-    })
-    tx = {
-        "id": _new_id(), "user_id": user_id, "type": "deposit", "asset": asset,
-        "amount": amount, "status": "completed", "address": address_in,
-        "network": network, "txid": fields.get("txid_in"), "provider": "blockbee",
-        "reference_id": uuid_value, "created_at": now,
-    }
-    if not existing_tx:
-        await db.transactions.insert_one(tx)
-    await db.blockchain_events.update_one(
-        {"provider": "blockbee", "event_id": uuid_value},
-        {"$set": {
-            "status": "confirmed", "amount": amount, "txid_out": fields.get("txid_out"),
-            "confirmations": int(fields.get("confirmations") or 0), "updated_at": now,
-        }},
-    )
+            await db.wallets.update_one(
+                {"user_id": user_id, "asset": asset},
+                {"$setOnInsert": {
+                    "id": _new_id(), "user_id": user_id, "asset": asset,
+                    "spot": 0.0, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+                    "updated_at": now,
+                }},
+                upsert=True,
+                session=session,
+            )
+            await db.wallets.update_one(
+                {"user_id": user_id, "asset": asset},
+                {"$inc": {"spot": amount}, "$set": {"updated_at": now}},
+                session=session,
+            )
+            wallet = await db.wallets.find_one(
+                {"user_id": user_id, "asset": asset},
+                {"_id": 0},
+                session=session,
+            )
+            await db.ledger_entries.insert_one({
+                "id": _new_id(), "user_id": user_id, "asset": asset, "bucket": "spot",
+                "delta": amount, "balance_after": float(wallet.get("spot") or 0),
+                "reason": "blockbee.deposit.confirmed", "reference_id": uuid_value, "created_at": now,
+            }, session=session)
+            await db.transactions.insert_one({
+                "id": _new_id(), "user_id": user_id, "type": "deposit", "asset": asset,
+                "amount": amount, "status": "completed", "address": address_in,
+                "network": network, "txid": fields.get("txid_in"), "provider": "blockbee",
+                "reference_id": uuid_value, "created_at": now,
+            }, session=session)
+            await db.blockchain_events.update_one(
+                {"provider": "blockbee", "event_id": uuid_value},
+                {"$set": {
+                    "status": "confirmed", "amount": amount, "txid_out": fields.get("txid_out"),
+                    "confirmations": int(fields.get("confirmations") or 0), "updated_at": now,
+                }},
+                session=session,
+            )
+
     await _log_audit(
         user_id, "wallet.deposit.confirmed",
         meta={"asset": asset, "network": network, "amount": amount, "uuid": uuid_value},
     )
     return Response(content="*ok*", media_type="text/plain")
-
 
 @api.post("/webhooks/blockbee/payout")
 async def blockbee_payout_webhook(request: Request):
