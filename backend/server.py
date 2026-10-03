@@ -415,7 +415,7 @@ async def orderbook(symbol: str):
     sym = symbol.upper()
     pair = f"{sym}/USDT"
     rows = await db.orders.find(
-        {"pair": pair, "status": "open", "type": "limit"},
+        {"pair": pair, "status": {"$in": ["open", "partial"]}, "type": "limit"},
         {"_id": 0, "side": 1, "price": 1, "quantity": 1, "filled_qty": 1},
     ).to_list(5000)
     bids = []
