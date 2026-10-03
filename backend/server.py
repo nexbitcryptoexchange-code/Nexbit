@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 import secrets
+import hashlib
 import logging
 import asyncio
 import random
@@ -210,12 +211,12 @@ async def forgot(data: ForgotIn):
     u = await db.users.find_one({"email": email})
     token = secrets.token_urlsafe(32)
     if u:
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         await db.password_reset_tokens.insert_one({
-            "id": _new_id(), "user_id": u["id"], "token": token,
+            "id": _new_id(), "user_id": u["id"], "token_hash": token_hash,
             "expires_at": _now() + timedelta(hours=1), "used": False,
             "created_at": _iso(_now()),
         })
-        logger.info("Password reset for %s token=%s", email, token)
         try:
             await send_password_reset(to=email, name=u.get("name") or email, token=token)
         except Exception as e:
@@ -226,7 +227,8 @@ async def forgot(data: ForgotIn):
 
 @auth.post("/reset-password")
 async def reset(data: ResetIn):
-    rec = await db.password_reset_tokens.find_one({"token": data.token, "used": False})
+    token_hash = hashlib.sha256(data.token.encode("utf-8")).hexdigest()
+    rec = await db.password_reset_tokens.find_one({"token_hash": token_hash, "used": False})
     if not rec:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     if rec["expires_at"] < _now():
