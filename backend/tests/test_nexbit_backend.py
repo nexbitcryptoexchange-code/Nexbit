@@ -5,6 +5,7 @@ Set NEXBIT_TEST_BASE_URL and the admin credentials in the backend environment wh
 running the admin/ledger smoke test.
 """
 import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -13,6 +14,8 @@ import requests
 from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 load_dotenv(BACKEND_DIR / ".env")
 
 BASE_URL = os.environ.get("NEXBIT_TEST_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
