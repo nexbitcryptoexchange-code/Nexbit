@@ -70,6 +70,18 @@ def test_financial_models_reject_non_finite_values():
         raise AssertionError("non-finite financial input was accepted")
 
 
+def test_financial_decimal_helpers_are_exact():
+    from decimal import Decimal
+    from bson.decimal128 import Decimal128
+    from financial import decimal_add, decimal_multiply, to_decimal, to_decimal128
+
+    assert decimal_add("0.1", "0.2") == Decimal("0.3")
+    assert decimal_multiply("0.1", "0.2") == Decimal("0.02")
+    stored = to_decimal128("123.4500000000000001")
+    assert isinstance(stored, Decimal128)
+    assert to_decimal(stored) == Decimal("123.4500000000000001")
+
+
 def test_health():
     response = requests.get(f"{API}/health", timeout=15)
     assert response.status_code == 200
