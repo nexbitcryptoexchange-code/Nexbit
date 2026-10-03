@@ -226,6 +226,54 @@ def test_admin_dashboard_does_not_synthesize_non_usdt_values():
     assert isinstance(stats["withdrawals_by_asset"], dict)
 
 
+def test_admin_dashboard_only_counts_last_24_hours():
+    admin_token = _login_admin()
+    from datetime import datetime, timedelta, timezone
+    from bson.decimal128 import Decimal128
+    from db import db
+
+    baseline = requests.get(
+        f"{API}/admin/dashboard",
+        headers=_headers(admin_token),
+        timeout=20,
+    )
+    assert baseline.status_code == 200, baseline.text
+    baseline_stats = baseline.json()["stats"]
+
+    fresh_id = f"e2e-{uuid.uuid4().hex}"
+    old_id = f"e2e-{uuid.uuid4().hex}"
+    now = datetime.now(timezone.utc)
+    awaitable_rows = [
+        {
+            "id": old_id, "pair": "NEXBIT/USDT", "price": Decimal128("100"),
+            "quantity": Decimal128("9"), "created_at": (now - timedelta(days=2)).isoformat(),
+        },
+        {
+            "id": fresh_id, "pair": "NEXBIT/USDT", "price": Decimal128("7"),
+            "quantity": Decimal128("3"), "created_at": now.isoformat(),
+        },
+    ]
+    import asyncio
+    async def seed_rows():
+        await db.trades.insert_many(awaitable_rows)
+    asyncio.run(seed_rows())
+
+    try:
+        response = requests.get(
+            f"{API}/admin/dashboard",
+            headers=_headers(admin_token),
+            timeout=20,
+        )
+        assert response.status_code == 200, response.text
+        stats = response.json()["stats"]
+        assert stats["trades_count"] == baseline_stats["trades_count"] + 1
+        assert float(stats["trading_volume_24h"]) == float(baseline_stats["trading_volume_24h"]) + 21.0
+    finally:
+        async def cleanup_rows():
+            await db.trades.delete_many({"id": {"$in": [old_id, fresh_id]}})
+        asyncio.run(cleanup_rows())
+
+
 def test_non_admin_cannot_read_admin_endpoints():
     token, _ = _register()
     headers = _headers(token)
