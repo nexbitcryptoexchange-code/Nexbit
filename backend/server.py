@@ -164,10 +164,10 @@ async def register(data: RegisterIn, response: Response):
     await db.users.insert_one(doc)
     # Seed empty wallets for key assets
     for asset in ["USDT", "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "ADA"]:
-        starting = 0.0
+        starting = to_decimal128("0")
         await db.wallets.insert_one({
             "id": _new_id(), "user_id": uid, "asset": asset,
-            "spot": starting, "futures": 0.0, "earn": 0.0, "locked": 0.0,
+            "spot": starting, "futures": to_decimal128("0"), "earn": to_decimal128("0"), "locked": to_decimal128("0"),
             "updated_at": _iso(_now()),
         })
     access = create_access_token(uid, email, "user")
