@@ -81,5 +81,9 @@ memory/test_credentials.md
 # Mobile development
 android-sdk/
 
-# overlay black-box crash/user-report dumps — session data, never history
+# overlay black-box crash/user-report dumps â€” session data, never history
 **/.nexbit/recordings/
+
+# Local environment files
+.env
+**/.env

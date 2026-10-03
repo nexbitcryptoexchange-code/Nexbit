@@ -1,1 +1,0 @@
-{"kind":"crash","note":"","url":"/admin","viewport":{"w":1366,"h":643},"error":{"kind":"rejection","message":"Network Error","file":"","stack":"AxiosError@http://localhost:3000/static/js/bundle.js:50028:5\nhandleError@http://localhost:3000/static/js/bundle.js:49286:19\n","frame":null},"recorder":"off","captured_at":"2026-10-03T11:35:33.302Z","events":[]}
