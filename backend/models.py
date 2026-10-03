@@ -1,5 +1,5 @@
 """Pydantic request/response models."""
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator, ConfigDict
 from typing import Optional, List, Literal
 from datetime import datetime
 
@@ -54,6 +54,7 @@ class KycDecisionIn(BaseModel):
 
 
 class OrderIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     pair: str
     side: Literal["buy", "sell"]
     type: Literal["market", "limit", "stop"]
@@ -63,6 +64,7 @@ class OrderIn(BaseModel):
 
 
 class FuturesOrderIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     pair: str
     side: Literal["long", "short"]
     leverage: int = Field(ge=1, le=125)
@@ -77,11 +79,13 @@ class ClosePositionIn(BaseModel):
 
 
 class DepositIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     asset: str
     amount: float = Field(gt=0)
 
 
 class WithdrawIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     asset: str
     amount: float = Field(gt=0)
     address: str
@@ -89,6 +93,7 @@ class WithdrawIn(BaseModel):
 
 
 class TransferIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     asset: str
     amount: float = Field(gt=0)
     from_wallet: Literal["spot", "futures", "earn"]
@@ -96,6 +101,7 @@ class TransferIn(BaseModel):
 
 
 class EarnSubscribeIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     product_id: str
     amount: float = Field(gt=0)
 
@@ -117,6 +123,7 @@ class AdminTxDecisionIn(BaseModel):
 
 
 class AdminBalanceAdjustmentIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     user_id: str
     asset: str
     amount: float = Field(gt=0)
@@ -126,13 +133,14 @@ class AdminBalanceAdjustmentIn(BaseModel):
 
 
 class MarketPairIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     symbol: str = Field(min_length=5, max_length=30)
     base: str = Field(min_length=2, max_length=15)
     quote: str = Field(min_length=2, max_length=15)
-    min_qty: float = 0.0001
-    tick: float = 0.01
-    maker_fee: float = 0.001
-    taker_fee: float = 0.001
+    min_qty: float = Field(default=0.0001, gt=0)
+    tick: float = Field(default=0.01, gt=0)
+    maker_fee: float = Field(default=0.001, ge=0)
+    taker_fee: float = Field(default=0.001, ge=0)
     enabled: bool = True
 
     @model_validator(mode="after")
@@ -148,11 +156,12 @@ class MarketPairIn(BaseModel):
 
 
 class FeeConfigIn(BaseModel):
-    spot_maker: float
-    spot_taker: float
-    futures_maker: float
-    futures_taker: float
-    withdraw_fee_pct: float
+    model_config = ConfigDict(allow_inf_nan=False)
+    spot_maker: float = Field(ge=0)
+    spot_taker: float = Field(ge=0)
+    futures_maker: float = Field(ge=0)
+    futures_taker: float = Field(ge=0)
+    withdraw_fee_pct: float = Field(ge=0)
 
 
 class FeeTreasuryIn(BaseModel):
